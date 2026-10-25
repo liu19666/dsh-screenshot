@@ -32,6 +32,10 @@ static class Program
     // --dark / --light override it so the host (or a test) can force either one.
     public static bool DarkMode;
 
+    // v2.1: automated evidence modes (--selftest/--auto/--detect/--longshot-probe) must
+    // never block on a modal dialog. Set from the command line before any UI exists.
+    public static bool SuppressDialogs;
+
     // Diagnostics stay in the build but are off unless DSH_SNIP_DEBUG=1: a shipped plugin
     // must not write a log file on every capture.
     static readonly bool DebugLog = System.Environment.GetEnvironmentVariable("DSH_SNIP_DEBUG") == "1";
@@ -72,6 +76,12 @@ static class Program
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
 
         // Headless evidence modes (see src/SelfTest.cs). Must run before any UI.
+        for (int ai = 0; ai < args.Length; ai++)
+        {
+            string a = args[ai];
+            if (a == "--selftest" || a == "--auto" || a == "--detect" ||
+                a == "--longshot-probe" || a == "--crash-probe") SuppressDialogs = true;
+        }
         if (SelfTest.TryRun(args)) return;
 
         if (args.Length >= 2 && args[0] == "--capture")
@@ -528,6 +538,8 @@ public class SnipForm : Form
     IntPtr MouseHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (IsDisposed || closing) return IntPtr.Zero;   // a queued hook call can outlive the form
+        if (nCode >= 0 && (wParam == (IntPtr)0x0201 || wParam == (IntPtr)0x0202))
+            Program.TLog("hookbtn " + wParam + " long=" + isLongCapturing + " vis=" + Visible + " fg=" + (GetForegroundWindow() == Handle));
         // While the overlay is up the right button cancels the capture. The desktop used to
         // steal it (opening its context menu), so it is swallowed here, before delivery.
         if (nCode >= 0 && (wParam == (IntPtr)0x0204 || wParam == (IntPtr)0x0205) && Visible && !closing)
@@ -1310,9 +1322,27 @@ public class SnipForm : Form
     }
 
     const int MaxLongFrames = 200;
-    const int MaxCanvasHeight = 30000;
+    const int MaxCanvasHeight = 20000;   // v2.1: same ceiling as LongStitcher.MaxHeight
     int lastWheelTick = 0;
     internal int minLongShotHeight = 0;
+
+    // --- v2.1 long-shot driver (captain, 2026-10-26) --------------------------------
+    // The 90 ms sampler used to gate every frame on ImagesIdentical (5 rows x ~16 cols,
+    // EXACT equality). One animated pixel inside the region kept that gate shut forever,
+    // so the preview froze at one frame while the application scrolled normally --
+    // reproduced black-box, see out/cap-e2e/BASELINE.md. The driver below replaces it:
+    //   1. a coarse 24x18 luma signature answers "did the content move?",
+    //   2. a settle window (one quiet tick, or 900 ms when it never settles),
+    //   3. LongStitcher.Push() does the actual match (row fingerprints + anchor run),
+    //   4. failure is VISIBLE (preview warning + MessageBox on finish), never a stall.
+    internal LongStitcher longStitcher;
+    Bitmap longCandidate;
+    int longChangedSince;
+    int longLastCommit;      // last stitch attempt: bounds how long a moving region can stay unresolved
+    internal int longFailures;
+    internal bool longStitchFailed;
+    internal string longNotice;
+    ulong[] longSig;   // per-row fingerprints of the last sample (exact change detector)
 
     internal void DisposeLongFrames()
     {
@@ -1327,6 +1357,20 @@ public class SnipForm : Form
         longFrames.Clear();
         longOffsets.Clear();
         if (lastSample != null) { lastSample.Dispose(); lastSample = null; }
+        ReleaseLongDriver();
+    }
+
+    // v2.1: the stitcher owns the composed canvas and the pending candidate bitmap.
+    // Idempotent so every session-end path (close / cancel / restart) can call it.
+    internal void ReleaseLongDriver()
+    {
+        if (longCandidate != null) { longCandidate.Dispose(); longCandidate = null; }
+        if (longStitcher != null) { longStitcher.Dispose(); longStitcher = null; }
+        longSig = null;
+        longFailures = 0;
+        longStitchFailed = false;
+        longNotice = null;
+        lastSample = null;
     }
 
     internal void StartLongShotCapture()
@@ -1351,8 +1395,24 @@ public class SnipForm : Form
         longFrames.Add(f0);
         longOffsets.Add(0);   // cumulative-offsets contract: frame 0 sits at canvas y=0
         longComposed = (Bitmap)f0.Clone();
-        lastSample = (Bitmap)f0.Clone();
+        lastSample = null;
         stableCount = 0;
+        wheelPending = false;
+        lastFrameReject = null;
+
+        // v2.1 driver: the stitcher starts from frame 0 and the signature baseline is
+        // taken from that same frame, so the very first tick only reports real motion.
+        if (longStitcher != null) { longStitcher.Dispose(); longStitcher = null; }
+        longStitcher = new LongStitcher();
+        longStitcher.MaxHeight = MaxCanvasHeight;
+        longStitcher.Reset(f0);
+        if (longCandidate != null) { longCandidate.Dispose(); longCandidate = null; }
+        longChangedSince = Environment.TickCount;
+        longLastCommit = Environment.TickCount;
+        longFailures = 0;
+        longStitchFailed = false;
+        longNotice = null;
+        longSig = LongStitcher.RowHashes(f0);
 
         // 4. Setup preview (N-8: dynamic preview placement avoiding sel)
         if (longPreview == null || longPreview.IsDisposed)
@@ -1382,94 +1442,180 @@ public class SnipForm : Form
 
     internal void LongTimer_Tick(object sender, EventArgs e)
     {
-        if (!isLongCapturing || longFrames.Count == 0) return;
+        if (!isLongCapturing || longStitcher == null) return;
 
-        // N-7: Do not sample while wheel is actively spinning; wait for pause
-        if (Environment.TickCount - lastWheelTick < 120)
-        {
-            stableCount = 0;
-            return;
-        }
-
-        // N-6: Cap frames and canvas height to avoid OOM
+        // N-6: cap frames and canvas height to avoid OOM.
         if (longFrames.Count >= MaxLongFrames || (longComposed != null && longComposed.Height >= MaxCanvasHeight))
         {
-            if (longTimer != null) longTimer.Stop();
-            if (longPreview != null && !longPreview.IsDisposed)
-                longPreview.SetWarning(Program.T("已达长截图最大上限，停止采集", "Max limit reached, capture stopped"));
+            StopLongShotCapture(Program.T("已达长截图最大上限，停止采集", "Max limit reached, capture stopped"));
             return;
         }
 
-        Bitmap currentSample = new Bitmap(sel.Width, sel.Height);
-        using (var g = Graphics.FromImage(currentSample))
+        // A region that animates forever never settles: every tick replaces the candidate,
+        // so "time since the last change" would never expire. Force a verdict every 900 ms
+        // since the last attempt instead, otherwise the preview silently stays at frame 1
+        // -- exactly the frozen behaviour the user reported (m01805, m02057).
+        if (longCandidate != null && Environment.TickCount - longLastCommit > 900)
         {
-            g.CopyFromScreen(origin.X + sel.X, origin.Y + sel.Y, 0, 0, sel.Size);
+            longLastCommit = Environment.TickCount;
+            CommitLongCandidate();
         }
 
-        if (wheelPending)
-        {
-            wheelPending = false;
-            // A wheel tick means the content DID move: sample immediately without the
-            // identical/stable gate so the frame is never swallowed by the beat logic.
-            AddFrameIfNew(currentSample);
-        }
+        Bitmap sample = CaptureSelectionSample();
+        if (sample == null) return;
 
-        bool identical = ImagesIdentical(lastSample, currentSample);
-        if (lastSample != null) lastSample.Dispose();
-        lastSample = currentSample;
+        ulong[] sig = LongStitcher.RowHashes(sample);
+        bool wheelTick = wheelPending;
+        wheelPending = false;
+        bool changed = wheelTick || (longSig != null && !SignaturesEqual(longSig, sig));
+        longSig = sig;
+        Program.TLog("longtick changed=" + changed + " wheel=" + wheelTick +
+            " cand=" + (longCandidate != null) + " frames=" + longFrames.Count +
+            " reject=" + (lastFrameReject ?? "-"));
 
-        if (identical)
+        if (changed)
         {
-            stableCount++;
-            if (stableCount == 1) // First stable tick after change
-            {
-                AddFrameIfNew(currentSample);
-            }
-        }
-        else
-        {
+            // The content moved: hold this sample as the candidate and wait for it to
+            // settle. No "identical to the previous frame" pre-gate -- that gate is what
+            // froze the preview at one frame for a year of animation.
+            if (longCandidate != null) longCandidate.Dispose();
+            longCandidate = sample;
+            longChangedSince = Environment.TickCount;
             stableCount = 0;
+            return;
         }
-        // currentSample ownership moved to lastSample right after capture; the next
-        // tick disposes it, so it must NOT be disposed here.
+
+        // Quiet tick: the pending candidate has settled, so it is safe to stitch it.
+        stableCount++;
+        if (longCandidate != null) CommitLongCandidate();
+        sample.Dispose();
     }
 
-    // Append currentSample as the next long-shot frame when it really adds content.
-    // Shared by the stable-frame path and the wheel path (N-7). Never takes ownership
-    // of currentSample: the frame is stored as a Clone and the caller keeps the
-    // sample as lastSample (the next tick disposes it).
+    // v2.1: stop sampling but keep the session alive -- Enter still finishes with
+    // whatever was stitched, and the notice stays on screen until then.
+    void StopLongShotCapture(string notice)
+    {
+        if (longTimer != null) longTimer.Stop();
+        if (string.IsNullOrEmpty(longNotice)) longNotice = notice;
+        if (longPreview != null && !longPreview.IsDisposed) longPreview.SetWarning(notice);
+    }
+
+    Bitmap CaptureSelectionSample()
+    {
+        try
+        {
+            Bitmap bmp = new Bitmap(sel.Width, sel.Height);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.CopyFromScreen(origin.X + sel.X, origin.Y + sel.Y, 0, 0, sel.Size);
+            }
+            return bmp;
+        }
+        catch (Exception) { return null; }
+    }
+
+    // Exact change detector: per-row fingerprints of the whole selection. The previous
+    // 24x18 luma grid was too coarse for white pages with thin grey rules - scrolling
+    // 120 px moved no cell by more than 6 levels, so no candidate frame was ever
+    // produced and the preview froze on frame 1.
+    static bool SignaturesEqual(ulong[] a, ulong[] b)
+    {
+        if (a == null || b == null || a.Length != b.Length) return false;
+        for (int k = 0; k < a.Length; k++)
+        {
+            if (a[k] != b[k]) return false;
+        }
+        return true;
+    }
+
+    // v2.1: hand the settled candidate to the incremental stitcher. The old body did an
+    // exact-pixel FindVerticalOverlap against the previous frame, which cannot survive
+    // one animated pixel and returned a single candidate; LongStitcher matches row
+    // fingerprints against the whole canvas with a small mismatch budget instead.
+    internal bool CommitLongCandidate()
+    {
+        if (longCandidate == null || longStitcher == null) return false;
+        Bitmap candidate = longCandidate;
+        longCandidate = null;
+        bool grew = false;
+        try
+        {
+            grew = longStitcher.Push(candidate);
+        }
+        catch (Exception ex)
+        {
+            lastFrameReject = "push:" + ex.GetType().Name;
+            grew = false;
+        }
+
+        if (grew)
+        {
+            longFailures = 0;
+            longStitchFailed = false;
+            longNotice = null;
+            lastFrameReject = null;
+            AppendStitchedFrame(candidate);
+            if (longPreview != null && !longPreview.IsDisposed)
+            {
+                longPreview.UpdatePreview(longComposed, longFrames.Count);
+                longPreview.SetWarning(null);
+            }
+            candidate.Dispose();
+            return true;
+        }
+
+        lastFrameReject = longStitcher.LastReject;
+        if (longStitcher.TooLong)
+        {
+            longStitchFailed = true;
+            StopLongShotCapture(Program.T("拼接失败：内容过长，已保留可拼接部分",
+                                          "Stitch failed: content too long, kept the stitchable part"));
+        }
+        else if (lastFrameReject != "identical" && Environment.TickCount - lastWheelTick < 3000)
+        {
+            // Only count a failure while the user is actually scrolling: a blinking
+            // caret in an otherwise static page must not raise a false alarm.
+            longFailures++;
+            if (longFailures >= 2)
+            {
+                longStitchFailed = true;
+                string notice = Program.T("拼接失败：选区内容有动态变化，已保留可拼接部分",
+                                          "Stitch failed: dynamic content in the region, kept the stitchable part");
+                longNotice = notice;
+                if (longPreview != null && !longPreview.IsDisposed) longPreview.SetWarning(notice);
+            }
+        }
+        try
+        {
+            if (lastRejectedSample != null) lastRejectedSample.Dispose();
+            lastRejectedSample = (Bitmap)candidate.Clone();
+        }
+        catch (Exception) { }
+        candidate.Dispose();
+        return false;
+    }
+
+    // The stitcher owns the pixels. longFrames/longOffsets stay as the public
+    // bookkeeping (preview frame counter, probe/SelfTest fields) and longComposed is the
+    // snapshot clone the editor draws from after FinishLongShot. Offsets are recorded as
+    // "canvas height when the frame arrived" -- composition no longer uses them.
+    void AppendStitchedFrame(Bitmap candidate)
+    {
+        int at = longComposed == null ? 0 : longComposed.Height;
+        longFrames.Add((Bitmap)candidate.Clone());
+        longOffsets.Add(at);
+        if (longComposed != null) longComposed.Dispose();
+        longComposed = (Bitmap)longStitcher.Canvas.Clone();
+    }
+
+    // Kept for programmatic callers (probe/SelfTest): push one sample immediately
+    // instead of waiting for the settle window.
     internal bool AddFrameIfNew(Bitmap currentSample)
     {
-        if (!isLongCapturing || longFrames.Count == 0) return false;
-        Bitmap lastFrame = longFrames[longFrames.Count - 1];
-        if (ImagesIdentical(lastFrame, currentSample))
-        {
-            lastFrameReject = "identical-to-last";
-            return false;
-        }
-        int overlap = LongShot.FindVerticalOverlap(lastFrame, currentSample, 10, sel.Height - 10);
-        if (overlap <= 10 || overlap >= sel.Height - 5)
-        {
-            lastFrameReject = "overlap=" + overlap;
-            try
-            {
-                if (lastRejectedSample != null) lastRejectedSample.Dispose();
-                lastRejectedSample = (Bitmap)currentSample.Clone();
-            }
-            catch (Exception) { }
-            return false;
-        }
-        // Cumulative-offsets contract (LongShot.Compose header, t16/F-13):
-        // frame i's canvas-y = previous frame's y + (frameHeight - overlap).
-        int newOffset = longOffsets[longOffsets.Count - 1] + (lastFrame.Height - overlap);
-        lastFrameReject = null;
-        longOffsets.Add(newOffset);
-        longFrames.Add((Bitmap)currentSample.Clone());
-        if (longComposed != null) longComposed.Dispose();
-        longComposed = LongShot.Compose(longFrames, longOffsets, sel.Width, newOffset + currentSample.Height);
-        if (longPreview != null && !longPreview.IsDisposed)
-            longPreview.UpdatePreview(longComposed, longFrames.Count);
-        return true;
+        if (!isLongCapturing || longStitcher == null || currentSample == null) return false;
+        if (longCandidate != null) { longCandidate.Dispose(); longCandidate = null; }
+        longCandidate = (Bitmap)currentSample.Clone();
+        return CommitLongCandidate();
     }
 
     internal void StepLongShot()
@@ -1488,6 +1634,22 @@ public class SnipForm : Form
 
         // Restore overlay Region
         Region = null;
+
+        // v2.1 / user rule m01805: a stitch failure must never be silent. The preview
+        // carried the warning while capturing; this is the last chance to tell the user
+        // the result is only the stitchable part. Suppressed for automated probes.
+        if (longStitchFailed && !Program.SuppressDialogs)
+        {
+            string msg = string.IsNullOrEmpty(longNotice)
+                ? Program.T("拼接失败：已保留可拼接部分", "Stitch failed: kept the stitchable part")
+                : longNotice;
+            try
+            {
+                MessageBox.Show(this, msg + Program.T("\n\n可继续编辑或保存。", "\n\nYou can keep editing or save it."),
+                    Program.T("长截图", "Long screenshot"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch (Exception) { }
+        }
 
         if (longComposed != null)
         {
@@ -1533,6 +1695,11 @@ public class SnipForm : Form
         longFrames.Clear();
         longOffsets.Clear();
         if (lastSample != null) { lastSample.Dispose(); lastSample = null; }
+        // v2.1: the stitcher's canvas has already been cloned into longComposed, so the
+        // working copy (up to 20000 rows) can go now; the editor keeps the clone.
+        if (longCandidate != null) { longCandidate.Dispose(); longCandidate = null; }
+        if (longStitcher != null) { longStitcher.Dispose(); longStitcher = null; }
+        longSig = null;
     }
 
     internal void CancelLongShot()
@@ -1545,6 +1712,7 @@ public class SnipForm : Form
         if (topBar != null && !topBar.IsDisposed) topBar.Show();
         DisposeLongFrames();
         if (longComposed != null) { longComposed.Dispose(); longComposed = null; }
+        ReleaseLongDriver();
         minLongShotHeight = 0;
     }
 
@@ -1796,6 +1964,7 @@ public class SnipForm : Form
         // Right click cancels, like every other snipping tool; swallowing it here also
         // keeps the desktop context menu from appearing over the overlay.
         if (e.Button == MouseButtons.Right) { Close(); return; }
+        Program.TLog("mousedown " + e.Button + " at=" + e.Location + " drag=" + dragMode + " hover=" + hoverRect + " hasSel=" + hasSel);
         base.OnMouseDown(e);
         // The hook already ended text editing for this very click: do not treat it as a
         // fresh click on the frame (that is what opened yet another text box).
@@ -2308,6 +2477,7 @@ public class SnipForm : Form
             OpenEditor(at, target);
             return;
         }
+        Program.TLog("mouseup drag=" + dragMode + " hover=" + hoverRect);
         if (dragMode == 4)
         {
             sel = hoverRect;
@@ -4752,10 +4922,6 @@ public class LongPreviewForm : Form
                 Program.T("帧)", " frames)"), f, b, 10, 10);
             using (var fb = new Font("Microsoft YaHei UI", 8F))
             {
-                if (!string.IsNullOrEmpty(warning))
-                {
-                    g.DrawString(warning, fb, Brushes.OrangeRed, 8, Height - 40);
-                }
                 g.DrawString(Program.T("滚轮继续 | Enter确定 | Esc取消", "Scroll · Enter done · Esc cancel"),
                     fb, Brushes.LightGray, 8, Height - 24);
             }
@@ -4768,6 +4934,18 @@ public class LongPreviewForm : Form
             using (var p = new Pen(Color.FromArgb(100, 100, 100)))
             {
                 g.DrawRectangle(p, px - 1, py - 1, previewBmp.Width + 1, previewBmp.Height + 1);
+            }
+        }
+        // Drawn last and on its own strip: a one-line DrawString clipped the notice at the
+        // panel edge, so the user saw "拼接失败：...已" and no reason.
+        if (!string.IsNullOrEmpty(warning))
+        {
+            var strip = new Rectangle(4, Height - 104, Width - 8, 76);
+            using (var bg = new SolidBrush(BackColor)) g.FillRectangle(bg, strip);
+            using (var fb = new Font("Microsoft YaHei UI", 8F))
+            {
+                TextRenderer.DrawText(g, warning, fb, Rectangle.Inflate(strip, -4, -2), Color.OrangeRed,
+                    TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
             }
         }
     }

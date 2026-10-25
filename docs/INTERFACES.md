@@ -4,10 +4,9 @@
 
 | 路径 | 所有者 | 内容 |
 | --- | --- | --- |
-| `src/SnipTool.cs` | overlay-dev | 覆盖层、选区、顶部开关栏、编辑器、工具栏、IPC、CLI、暖进程 |
+| `src/SnipTool.cs` | overlay-dev | 覆盖层、选区、编辑器、工具栏、IPC、CLI、暖进程 |
 | `src/SelfTest.cs` | overlay-dev | 无头证据模式（--selftest / --auto / --detect） |
 | `src/Detect.cs` | engine-dev | 目标识别（窗口/屏幕/任务栏）、多显示器与 DPI |
-| `src/LongShot.cs` | engine-dev | 长截图拼接数学 + 预览尺寸 |
 | `src/EngineTests.cs` | engine-dev | `bin/EngineTests.exe` 入口（JSON + PNG 证据） |
 | `lib/client.js`, `lib/index.js`, `package.json`, `cordis.patch.yml`, `README*.md` | plugin-dev | DSH 插件两半：话筒左侧按钮、host 路由、图片入输入区、打包元数据 |
 | `build.ps1` | captain | 构建脚本（已就绪，勿改签名；需要改动先找 captain） |
@@ -26,11 +25,7 @@
   - `TargetHit.Label` 语义（供 UI 显示目标名，**尺寸标签由 overlay 自己用 Rect 渲染**）：窗口 = 标题（空则类名）；任务栏 = 本地化「任务栏」/`Taskbar`；屏幕 = 「屏幕 N」/`Display N`。
 - `TargetRect TaskbarBounds(TargetRect monitorBounds)` — 自动隐藏（`ABM_GETSTATE` 的 `ABS_AUTOHIDE`）或该屏无任务栏时返回空矩形（`W`/`H` 为 0）。
 
-`LongShot`（`src/LongShot.cs`）：
-
-- `int FindVerticalOverlap(Bitmap prev, Bitmap next, int minOverlap, int maxOverlap)` — 无可靠重叠返回 -1。
-- `Bitmap Compose(IList<Bitmap> frames, IList<int> offsets, int width, int height)`。
-- `Size PreviewSize(int contentW, int contentH, int maxW, int maxH)` — 等比缩到框内。
+长截图引擎契约（v2.1 起 `src/LongShot.cs` 已删除，不再有拼接模块）。
 
 签名变更必须先在 team 里广播（captain + overlay-dev），不得单方面改。
 
@@ -48,7 +43,7 @@
 
 1. 构建通过：`pwsh -File build.ps1 -Tests`，exit 0。
 2. 引擎：`bin/EngineTests.exe --json out/engine.json --png out/`，exit 0，JSON 里每项 check 通过。
-3. 覆盖层 UI：`bin/SnipTool.exe --selftest out/` 生成 PNG（候选高亮、暗化、尺寸标签、顶部开关栏、长截图预览、编辑器工具栏、马赛克前后），截图必须肉眼可判读。
+3. 覆盖层 UI：`bin/SnipTool.exe --selftest out/` 生成 PNG（候选高亮、暗化、尺寸标签、编辑器工具栏、马赛克前后），截图必须肉眼可判读。
 4. 插件：`node --check lib/*.js` 或等价语法检查；`package.json` 字段与 `cordis.patch.yml` 与 v1.0.5 一致且可安装。
 5. 图片入输入区链路：给出 host 路由 → client 插入的代码位置与手工验证步骤（不自动发送）。
 
@@ -74,5 +69,5 @@
 1. **两个冒烟脚本重复**：`tools/plugin-smoke.mjs`（harness-dev，支持 `--root`/`--json`，e2e 第 5 步用它）与 `test/plugin/smoke.mjs`（plugin-dev，桩加载 5 条路由）。t5 需收敛为唯一入口，或在 `docs/VERIFY.md` 写清各自职责。
 2. **`test/plugin/smoke.mjs` 依赖 cwd**：它按 `dsh-screenshot-v2/lib/index.js` 相对当前目录解析，在仓库根跑会 `ERR_MODULE_NOT_FOUND`，在 workspace 根跑才 exit 0。t5 必须改成基于 `import.meta.url` 解析仓库根，任何 cwd 下都能跑。
 3. **README 配图**：`docs/screenshots/*.png` 是 v1.0.5 旧图，v2 已加顶部开关栏与底部马赛克/三键工具栏。t5 用 `out/selftest` 新图替换，或在图下标注示意图。
-4. **隐藏逻辑归属**：隐藏 DSH 由原生按 `%LOCALAPPDATA%\dsh-screenshot\settings.json` 决定，插件不得再传 `hide`；t5 复核 `lib/index.js` 参数与 `Program.Main` 参数表一致。
-5. **Web GUI 端口已变**：当前实例是 `http://127.0.0.1:64265`（旧文档写的 62916 已失效）；任何成员都不要重启 DSH。
+4. **隐藏逻辑归属（v2.1 已反转）**：隐藏 DSH 改为**每次点击决定**——左键 `hide=0`、右键 `hide=1`，由 `lib/client.js` 写进 `/shot/api/capture` 的请求体，`lib/index.js` 把它变成唤醒行 `hide=1|0`（暖进程）或冷启动参数 `--hide`/`--no-hide`。原生不再读 settings 文件（`Settings` 类已删除）。
+5. **Web GUI 端口会变**：DSH 每次重启端口都会变，以运行时上下文给出的 URL 为准；任何成员都不要重启 DSH。

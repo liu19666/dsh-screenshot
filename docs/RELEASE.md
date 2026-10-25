@@ -5,7 +5,7 @@
 
 ## 版本
 
-- 当前版本号以 `package.json` 的 `version` 为准（v2 交付时为 `2.0.0`，语义化版本）；插件路由 `/shot/api/version` 返回同一版本号（只返回版本号，不暴露结果目录等本机路径），可用来确认 profile 里装的是哪一版。
+- 当前版本号以 `package.json` 的 `version` 为准（v2.1 交付时为 `2.1.0`，语义化版本）；插件路由 `/shot/api/version` 返回同一版本号（只返回版本号，不暴露结果目录等本机路径），可用来确认 profile 里装的是哪一版。
 - 版本号只由 Plugin 负责人在 `package.json` 中提升；本文件不规定新版本号，避免与
   `docs/SPEC.md` 的发布纪律冲突。
 - 兼容矩阵：
@@ -65,7 +65,7 @@ pnpm pack --pack-destination out/dist
 pwsh -NoProfile -File install.ps1 -WhatIf
 
 # 2. 实跑（默认 profile：DSH_PROFILE_DIR / DSH_HOME+DSH_PROFILE / ~/.dsh/profiles/desktop）
-pwsh -NoProfile -File install.ps1 -Tgz out/dist/dsh-screenshot-2.0.0.tgz
+pwsh -NoProfile -File install.ps1 -Tgz out/dist/dsh-screenshot-2.1.0.tgz
 
 # 指定 profile（推荐先在临时 profile 里演练）
 pwsh -NoProfile -File install.ps1 -ProfileDir <profile目录> -Tgz <tgz路径>

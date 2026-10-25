@@ -54,7 +54,7 @@ check('routes registered', ['/shot/api/capture', '/shot/api/snip', '/shot/api/st
 
 // --- version: no local paths ----------------------------------------------------------------
 const version = await get('/shot/api/version')
-check('version returns 2.0.0', version.status === 200 && version.json && version.json.version === '2.0.0', version.text)
+check('version returns 2.1.0', version.status === 200 && version.json && version.json.version === '2.1.0', version.text)
 check('version exposes no path', version.json && !('resultDir' in version.json) && !/[A-Za-z]:\\/.test(version.text), version.text)
 
 // --- last: payload shape, no absolute path ---------------------------------------------------

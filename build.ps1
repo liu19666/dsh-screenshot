@@ -48,7 +48,7 @@ function Invoke-Csc {
 
 $all = Get-ChildItem -Path (Join-Path $root 'src') -Filter *.cs -Recurse | Sort-Object FullName
 $mainSources = @($all | Where-Object { $_.Name -ne 'EngineTests.cs' } | ForEach-Object { $_.FullName })
-$testSources = @($all | Where-Object { $_.Name -eq 'EngineTests.cs' -or $_.Name -eq 'Detect.cs' -or $_.Name -eq 'LongShot.cs' } | ForEach-Object { $_.FullName })
+$testSources = @($all | Where-Object { $_.Name -eq 'EngineTests.cs' -or $_.Name -eq 'Detect.cs' } | ForEach-Object { $_.FullName })
 
 Invoke-Csc -Out (Join-Path $OutDir 'SnipTool.exe') -Target 'winexe' -Sources $mainSources
 Write-Host ("built " + (Join-Path $OutDir 'SnipTool.exe'))

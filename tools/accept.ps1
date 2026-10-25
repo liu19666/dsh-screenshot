@@ -24,7 +24,7 @@
   Do not run npm pack; reuse the existing dsh-screenshot-<version>.tgz (repo root or dist/).
 
 .PARAMETER SkipNative
-  Skip the native overlay probes (engine/selftest/longshot/crash). Fast smoke only: those rows are
+  Skip the native overlay probes (engine/selftest/crash). Fast smoke only: those rows are
   recorded as skipped, never as passed.
 
 .PARAMETER OutDir
@@ -208,7 +208,7 @@ Add-Row 'step-install-plan' 'install.ps1 -WhatIf step status (plan only, no muta
 $packWant = if ($SkipPack) { 'skipped' } else { 'pass' }
 Add-Row 'step-package' 'package step status' $(if ((Get-StepStatus 'package') -eq $packWant) { 'pass' } else { 'fail' }) ('package=' + (Get-StepStatus 'package') + ' (expected ' + $packWant + ')')
 $nativeWant = if ($SkipNative) { 'skipped' } else { 'pass' }
-foreach ($nid in @('engine', 'selftest', 'longshot-probe', 'longshot-negative', 'crash-probe')) {
+foreach ($nid in @('engine', 'selftest', 'crash-probe')) {
     $st = Get-StepStatus $nid
     $okStep = ($st -eq $nativeWant)
     Add-Row ('step-' + $nid) ('native step ' + $nid) $(if ($okStep) { 'pass' } else { 'fail' }) ($nid + '=' + $st + ' (expected ' + $nativeWant + ')')
@@ -229,19 +229,19 @@ if ($SkipNative) {
 }
 
 $selftestSummary = Get-JsonFile (Join-Path $e2eOut 'selftest/summary.json')
-$requiredCriteria = @('A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9/R26', 'N1', 'N2', 'N2b', 'N3')
+$requiredCriteria = @('A1', 'A2', 'A6', 'A7', 'A9/R26')
 if ($SkipNative) {
-    Add-Row 'selftest-summary' 'selftest summary: 13 criteria present and passed' 'skip' 'skipped by -SkipNative'
+    Add-Row 'selftest-summary' 'selftest summary: 5 criteria present and passed' 'skip' 'skipped by -SkipNative'
 } elseif ($null -eq $selftestSummary) {
-    Add-Row 'selftest-summary' 'selftest summary: 13 criteria present and passed' 'fail' 'selftest/summary.json is missing'
+    Add-Row 'selftest-summary' 'selftest summary: 5 criteria present and passed' 'fail' 'selftest/summary.json is missing'
 } else {
     $got = @($selftestSummary.results | ForEach-Object { [string]$_.criterion })
     $missingCrit = @($requiredCriteria | Where-Object { $got -notcontains $_ })
     $notPassed = @($selftestSummary.results | Where-Object { $_.status -ne 'passed' } | ForEach-Object { $_.criterion + '=' + $_.status })
     $pngDir = Join-Path $e2eOut 'selftest'
     $pngCount = @(Get-ChildItem -LiteralPath $pngDir -File -Filter '*.png' -ErrorAction SilentlyContinue).Count
-    $okSelf = ($missingCrit.Count -eq 0 -and $notPassed.Count -eq 0 -and $pngCount -ge 8)
-    Add-Row 'selftest-summary' 'selftest summary: 13 criteria present and passed (+ >=8 PNGs)' $(if ($okSelf) { 'pass' } else { 'fail' }) ('criteria=' + $got.Count + ' missing=[' + ($missingCrit -join ', ') + '] failed=[' + ($notPassed -join ', ') + '] pngs=' + $pngCount)
+    $okSelf = ($missingCrit.Count -eq 0 -and $notPassed.Count -eq 0 -and $pngCount -ge 6)
+    Add-Row 'selftest-summary' 'selftest summary: 5 criteria present and passed (+ >=6 PNGs)' $(if ($okSelf) { 'pass' } else { 'fail' }) ('criteria=' + $got.Count + ' missing=[' + ($missingCrit -join ', ') + '] failed=[' + ($notPassed -join ', ') + '] pngs=' + $pngCount)
 }
 
 $crash = Get-JsonFile (Join-Path $e2eOut 'crashprobe/crash_probe.json')
@@ -252,33 +252,6 @@ if ($SkipNative) {
 } else {
     $okCrash = ($crash.ok -eq $true -and [int]$crash.afterBytes -gt [int]$crash.beforeBytes -and ([string]$crash.logPath).EndsWith('dsh-snip-error.log'))
     Add-Row 'crash-probe-json' 'crash_probe.json: log rotated, bytes grew' $(if ($okCrash) { 'pass' } else { 'fail' }) ('ok=' + $crash.ok + ' bytes=' + $crash.beforeBytes + '->' + $crash.afterBytes + ' log=' + $crash.logPath)
-}
-
-$longshot = Get-JsonFile (Join-Path $e2eOut 'longshot/longshot_probe.json')
-if ($SkipNative) {
-    Add-Row 'longshot-json' 'longshot_probe.json: real scroll capture, no fallback, export keeps height' 'skip' 'skipped by -SkipNative'
-} elseif ($null -eq $longshot) {
-    Add-Row 'longshot-json' 'longshot_probe.json: real scroll capture, no fallback, export keeps height' 'fail' 'longshot/longshot_probe.json is missing'
-} else {
-    $names = @($longshot.PSObject.Properties.Name)
-    $hasFb = $names -contains 'fallbackUsed'
-    $hasReal = $names -contains 'realPath'
-    $hasN1 = $names -contains 'n1RegressionOk'
-    $hasHook = $names -contains 'hookUnhooked'
-    $okLs = ($longshot.ok -eq $true -and [int]$longshot.frames -ge 2 -and [int]$longshot.composedHeight -gt [int]$longshot.selHeight -and $longshot.matchedMarkers -eq $true)
-    $okLs = $okLs -and $hasFb -and $longshot.fallbackUsed -eq $false -and $hasReal -and $longshot.realPath -eq $true
-    $okLs = $okLs -and $hasN1 -and $longshot.n1RegressionOk -eq $true -and [int]$longshot.exportedHeight -ge [int]$longshot.composedHeight
-    $okLs = $okLs -and $hasHook -and $longshot.hookInstalledDuringCapture -eq $true -and $longshot.hookUnhooked -eq $true
-    Add-Row 'longshot-json' 'longshot_probe.json: real scroll capture, no fallback, export keeps height' $(if ($okLs) { 'pass' } else { 'fail' }) ('ok=' + $longshot.ok + ' frames=' + $longshot.frames + ' sel=' + $longshot.selHeight + ' composed=' + $longshot.composedHeight + ' exported=' + $longshot.exportedHeight + ' markers=' + $longshot.matchedMarkers + ' fallbackUsed=' + $longshot.fallbackUsed + ' realPath=' + $longshot.realPath + ' n1=' + $longshot.n1RegressionOk + ' unhooked=' + $longshot.hookUnhooked)
-}
-
-$longshotNeg = Get-JsonFile (Join-Path $e2eOut 'longshot-negative/longshot_probe.json')
-if ($SkipNative) {
-    Add-Row 'longshot-negative-json' 'negative control: wheel forwarding disabled must report ok=false' 'skip' 'skipped by -SkipNative'
-} elseif ($null -eq $longshotNeg) {
-    Add-Row 'longshot-negative-json' 'negative control: wheel forwarding disabled must report ok=false' 'fail' 'longshot-negative/longshot_probe.json is missing'
-} else {
-    Add-Row 'longshot-negative-json' 'negative control: wheel forwarding disabled must report ok=false' $(if ($longshotNeg.ok -eq $false) { 'pass' } else { 'fail' }) ('ok=' + $longshotNeg.ok + ' (must be False)')
 }
 
 $contract = Get-JsonFile (Join-Path $e2eOut 'ev-contract/client-contract.json')
@@ -315,21 +288,6 @@ if ($null -eq $smoke) {
     $clientDetail = if ($clientLoad.Count -gt 0) { [string]$clientLoad[0].detail } else { '' }
     $okS = ([string]$smoke.status -eq 'pass' -and $badS.Count -eq 0 -and @($smoke.checks).Count -ge 8 -and $clientDetail.Contains('real slots contract'))
     Add-Row 'plugin-smoke-json' 'plugin-smoke.json: 8 checks pass incl client-load via the real contract' $(if ($okS) { 'pass' } else { 'fail' }) ('status=' + $smoke.status + ' checks=' + @($smoke.checks).Count + ' failed=[' + ($badS -join ', ') + '] client-load=' + $clientDetail)
-}
-
-# ---------------------------------------------------------------------------------
-# 4. optional regression harness (reviewer artifacts under out/ are not part of the repo)
-# ---------------------------------------------------------------------------------
-$n1 = Join-Path $script:Root 'out/review-t21/LongShotCropRegression.exe'
-if (-not (Test-Path -LiteralPath $n1)) {
-    Add-Row 'n1-crop-gate' 'N1 regression harness: exported long shot keeps the stitched height' 'skip' 'out/review-t21/LongShotCropRegression.exe is not present in this checkout'
-} else {
-    $gateTxt = Join-Path $outFull 'n1-gate.txt'
-    $np = Start-Process -FilePath $n1 -Wait -PassThru -NoNewWindow -RedirectStandardOutput $gateTxt
-    $gateOut = if (Test-Path -LiteralPath $gateTxt) { Get-Content -LiteralPath $gateTxt -Raw } else { '' }
-    $verdictLine = (@(($gateOut -split "`n") | Where-Object { $_ -match 'verdict=' }) -join ' ').Trim()
-    $okN1 = ($np.ExitCode -eq 0 -and $gateOut -match 'verdict=PASS')
-    Add-Row 'n1-crop-gate' 'N1 regression harness: exported long shot keeps the stitched height' $(if ($okN1) { 'pass' } else { 'fail' }) ('exit=' + $np.ExitCode + ' ' + $verdictLine)
 }
 
 # ---------------------------------------------------------------------------------

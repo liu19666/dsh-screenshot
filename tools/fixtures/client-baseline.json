@@ -1,7 +1,7 @@
 {
   "schema": "dsh-screenshot-client-baseline/v1",
-  "sha256": "eb306de64ff3eb074ef414bf79eb5d5103f23bddc5c316a5c5320d228d16975a",
-  "updatedAt": "2026-10-25T20:06:06.567Z",
-  "reason": "t35 探针加固后重打包（t36 最终交付批次）：client.js 探针上报改为 POST JSON body，DOM 搬运 hack 计数仍为 0，契约 15/15 + 旧 bundle 负控三类被拒",
+  "sha256": "3bfb13f13829cdeb3323ecba5f52d3af7a37f4e8d42609db924471d0464aea41",
+  "updatedAt": "2026-10-25T22:12:16.797Z",
+  "reason": "v2.1: left/right click entry (hide=1|0), tooltip text, no long screenshot",
   "client": "lib/client.js"
 }

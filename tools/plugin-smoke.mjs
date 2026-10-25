@@ -412,6 +412,8 @@ function checkCliSync() {
   if (!statSafe(csPath)) return addCheck(id, title, 'pending', 'src/SnipTool.cs missing')
   const host = readText(hostPath)
   const cs = readText(csPath)
+  const clientPath = join(root, 'lib', 'client.js')
+  const client = statSafe(clientPath) ? readText(clientPath) : ''
 
   // The argument loop is the only place that may declare a flag.
   const loopAt = cs.indexOf('for (int i = 0; i < args.Length; i++)')
@@ -446,10 +448,18 @@ function checkCliSync() {
   for (const flag of ['--parent', '--out', '--lang']) {
     if (!valueFlags.has(flag)) problems.push(flag + ' must take a value (i + 1 < args.Length)')
   }
-  if (hostFlags.has('--hide') || hostFlags.has('--no-hide')) {
-    problems.push('host still passes a hide flag; hiding belongs to the native settings file')
+  // v2.1 contract: hiding DSH is a per-click decision (left click = keep, right click = hide),
+  // so the host MUST carry the flag on both paths and the native side MUST parse both.
+  for (const flag of ['--hide', '--no-hide']) {
+    if (!hostFlags.has(flag)) problems.push('host never passes ' + flag + ' on the cold-start path')
+    if (!nativeFlags.has(flag)) problems.push('Program.Main does not parse ' + flag)
   }
-  if (/\bhide\b/.test(host)) problems.push('lib/index.js still mentions "hide"')
+  for (const field of ['hide=1', 'hide=0']) {
+    if (host.indexOf(field) < 0) problems.push('lib/index.js never sends ' + field + ' on the wake line')
+    if (cs.indexOf(field) < 0) problems.push('the native serve loop does not understand ' + field)
+  }
+  if (!/hide:\s*!!hide/.test(client)) problems.push('lib/client.js does not forward the click side as hide')
+  if (/Settings\.Load/.test(cs)) problems.push('src/SnipTool.cs still reads a settings file for the hide flag')
   // The host half is an ES module: "require" would throw at runtime and be swallowed.
   if (/\brequire\s*\(/.test(host)) problems.push('lib/index.js uses require() inside an ES module')
   if (!/client=1/.test(host)) problems.push('host does not tell the native side client=1 (double paste risk)')
@@ -457,7 +467,7 @@ function checkCliSync() {
 
   if (problems.length) return addCheck(id, title, 'fail', problems.join('; '))
   return addCheck(id, title, 'pass',
-    'host passes [' + passed.join(' ') + ']; native parses [' + [...nativeFlags].sort().join(' ') + ']; no hide dependency',
+    'host passes [' + passed.join(' ') + ']; native parses [' + [...nativeFlags].sort().join(' ') + ']; hide travels per click (hide=1/0 + --hide/--no-hide)',
     { hostFlags: passed, nativeFlags: [...nativeFlags].sort(), valueFlags: [...valueFlags].sort() })
 }
 

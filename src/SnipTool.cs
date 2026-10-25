@@ -80,7 +80,7 @@ static class Program
         {
             string a = args[ai];
             if (a == "--selftest" || a == "--auto" || a == "--detect" ||
-                a == "--longshot-probe" || a == "--crash-probe") SuppressDialogs = true;
+                a == "--crash-probe") SuppressDialogs = true;
         }
         if (SelfTest.TryRun(args)) return;
 
@@ -115,8 +115,7 @@ static class Program
         TLog("start exe=" + Application.ExecutablePath + " built=" +
             System.IO.File.GetLastWriteTime(Application.ExecutablePath).ToString("HH:mm:ss"));
         DarkMode = SystemUsesDarkApps();
-        Settings userSettings = Settings.Load();
-        bool hide = userSettings.HideDsh, serve = false, showNow = false;
+        bool hide = false, serve = false, showNow = false;
         int parentPid = 0;
         for (int i = 0; i < args.Length; i++)
         {
@@ -171,8 +170,7 @@ static class Program
             // always matches the application instead of the OS.
             if (request.Contains("lang=zh")) LangZh = true;
             else if (request.Contains("lang=en")) LangZh = false;
-            userSettings = Settings.Load();
-            bool sessionHide = userSettings.HideDsh;
+            bool sessionHide = false;
             if (request.Contains("hide=1")) sessionHide = true;
             else if (request.Contains("hide=0")) sessionHide = false;
             if (request.Contains("client=1")) ClientDelivers = true;
@@ -457,21 +455,8 @@ public class SnipForm : Form
     Point lastProbe;
     DateTime lastProbeAt = DateTime.MinValue;
 
-    Settings settings;
-    TopBarForm topBar;
-    LongPreviewForm longPreview;
-    internal bool isLongShotMode;
-    internal bool isLongCapturing;
-    internal readonly List<Bitmap> longFrames = new List<Bitmap>();
-    internal readonly List<int> longOffsets = new List<int>();
-    internal Bitmap longComposed;
-    internal System.Windows.Forms.Timer longTimer;
-    Bitmap lastSample;
-    internal int stableCount;
-    delegate IntPtr KeyboardHookProc(int nCode, IntPtr wParam, IntPtr lParam);
-    internal IntPtr keyboardHook = IntPtr.Zero;
-    KeyboardHookProc keyboardHookProc;
-    internal bool HasKeyboardHook { get { return keyboardHook != IntPtr.Zero; } }
+
+
     // Toolbar palette, resolved once from the light/dark mode.
     Color barBack, barFore, barHover, barOn;
 
@@ -486,9 +471,7 @@ public class SnipForm : Form
 
     public SnipForm(bool hide)
     {
-        settings = Settings.Load();
         hideDsh = hide;
-        isLongShotMode = settings.LongShot;
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;
@@ -539,7 +522,7 @@ public class SnipForm : Form
     {
         if (IsDisposed || closing) return IntPtr.Zero;   // a queued hook call can outlive the form
         if (nCode >= 0 && (wParam == (IntPtr)0x0201 || wParam == (IntPtr)0x0202))
-            Program.TLog("hookbtn " + wParam + " long=" + isLongCapturing + " vis=" + Visible + " fg=" + (GetForegroundWindow() == Handle));
+            Program.TLog("hookbtn " + wParam + " vis=" + Visible + " fg=" + (GetForegroundWindow() == Handle));
         // While the overlay is up the right button cancels the capture. The desktop used to
         // steal it (opening its context menu), so it is swallowed here, before delivery.
         if (nCode >= 0 && (wParam == (IntPtr)0x0204 || wParam == (IntPtr)0x0205) && Visible && !closing)
@@ -548,35 +531,12 @@ public class SnipForm : Form
             // reaches the desktop.
             if (wParam == (IntPtr)0x0205)
             {
-                if (isLongCapturing)
-                {
-                    try { BeginInvoke((MethodInvoker)(() => { CancelLongShot(); })); }
-                    catch (Exception) { }
-                }
-                else
-                {
-                    try { BeginInvoke((MethodInvoker)(() => { if (!closing && Visible) Close(); })); }
-                    catch (Exception) { }
-                }
+                try { BeginInvoke((MethodInvoker)(() => { if (!closing && Visible) Close(); })); }
+                catch (Exception) { }
             }
             return (IntPtr)1;
         }
-        if (nCode >= 0 && wParam == (IntPtr)0x020A && isLongCapturing) // WM_MOUSEWHEEL
-        {
-            try
-            {
-                var info = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
-                var pt = new Point(info.pt.X - origin.X, info.pt.Y - origin.Y);
-                // Dark area outside sel: swallow wheel so background application doesn't scroll!
-                if (!sel.Contains(pt))
-                {
-                    return (IntPtr)1;
-                }
-                lastWheelTick = Environment.TickCount;
-                stableCount = 0;
-            }
-            catch (Exception) { }
-        }
+
         if (nCode >= 0 && wParam == (IntPtr)0x0201 && editor != null)   // WM_LBUTTONDOWN
         {
             try
@@ -597,65 +557,7 @@ public class SnipForm : Form
         return CallNextHookEx(mouseHook, nCode, wParam, lParam);
     }
 
-    [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int idHook, KeyboardHookProc cb, IntPtr hMod, uint threadId);
 
-    void InstallKeyboardHook()
-    {
-        if (keyboardHook != IntPtr.Zero) return;
-        keyboardHookProc = KeyboardHookCallback;
-        // N-3: WH_KEYBOARD_LL is inherently system-global (a thread-scoped install fails,
-        // which is exactly what happened when this tried threadId=current). The swallow
-        // risk is therefore handled in the callback itself: Enter/Esc are consumed only
-        // when our overlay is the foreground window or the cursor is inside the running
-        // selection, everything else falls through to CallNextHookEx untouched, and the
-        // callback bails out untouched once the form is closing/disposed.
-        keyboardHook = SetWindowsHookEx(13, keyboardHookProc, IntPtr.Zero, 0);
-    }
-
-    internal void UninstallKeyboardHook()
-    {
-        if (keyboardHook != IntPtr.Zero)
-        {
-            try { UnhookWindowsHookEx(keyboardHook); } catch (Exception) { }
-            keyboardHook = IntPtr.Zero;
-        }
-        keyboardHookProc = null;
-    }
-
-    IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        // N-3: the callback can outlive the form (the OS may still hold the hook for a
-        // few messages after UnhookWindowsHookEx). Touching a disposed form here threw
-        // inside BeginInvoke and only Application.ThreadException ever saw it.
-        if (closing || IsDisposed || Disposing) return CallNextHookEx(keyboardHook, nCode, wParam, lParam);
-        if (nCode >= 0 && isLongCapturing && (wParam == (IntPtr)0x0100 || wParam == (IntPtr)0x0104))
-        {
-            IntPtr fg = GetForegroundWindow();
-            uint fgPid = 0;
-            if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fgPid);
-            bool isOurWindow = (fgPid == (uint)MyPid);
-            Point cur = Cursor.Position;
-            Point clientPt = new Point(cur.X - origin.X, cur.Y - origin.Y);
-            bool inSel = sel.Contains(clientPt);
-
-            // N-3: Only intercept Enter/Esc when our window is foreground or cursor is within sel
-            if (isOurWindow || inSel)
-            {
-                int vk = Marshal.ReadInt32(lParam);
-                if (vk == 0x0D) // VK_RETURN
-                {
-                    BeginInvoke((MethodInvoker)(() => FinishLongShot()));
-                    return (IntPtr)1;
-                }
-                if (vk == 0x1B) // VK_ESCAPE
-                {
-                    BeginInvoke((MethodInvoker)(() => CancelLongShot()));
-                    return (IntPtr)1;
-                }
-            }
-        }
-        return CallNextHookEx(keyboardHook, nCode, wParam, lParam);
-    }
     void FindDsh()
     {
         if (Program.ParentPid != 0)
@@ -816,10 +718,6 @@ public class SnipForm : Form
         // Not started here: the magnifier is driven from OnMouseMove, so an idle overlay
         // must not wake the process 60 times a second.
         InstallMouseHook();
-
-        topBar = new TopBarForm(this, settings);
-        topBar.PositionAt(origin, vs.Size);
-        topBar.Show(this);
     }
 
     // The toolbar stays visible while the frame is edited. Hiding it left stale
@@ -1256,26 +1154,9 @@ public class SnipForm : Form
         tool = "select";
         bar.Selected = null;
         SetLoupeVisible(false);
-        if (topBar != null && !topBar.IsDisposed) topBar.Hide();
-        if (isLongShotMode)
-        {
-            StartLongShotCapture();
-        }
-        else
-        {
-            ShowBar();
-        }
+        ShowBar();
     }
 
-    public void SetHideDsh(bool hide)
-    {
-        hideDsh = hide;
-    }
-
-    public void SetLongShotMode(bool on)
-    {
-        isLongShotMode = on;
-    }
 
     public static void ApplyMosaic(Graphics g, Bitmap src, Rectangle r, int blockSize)
     {
@@ -1303,418 +1184,7 @@ public class SnipForm : Form
         }
     }
 
-    static bool ImagesIdentical(Bitmap a, Bitmap b)
-    {
-        if (a == null || b == null) return false;
-        if (a.Width != b.Width || a.Height != b.Height) return false;
-        int w = a.Width;
-        int h = a.Height;
-        int[] rows = new int[] { 0, h / 4, h / 2, 3 * h / 4, h - 1 };
-        for (int r = 0; r < rows.Length; r++)
-        {
-            int y = rows[r];
-            for (int x = 0; x < w; x += Math.Max(1, w / 16))
-            {
-                if (a.GetPixel(x, y) != b.GetPixel(x, y)) return false;
-            }
-        }
-        return true;
-    }
 
-    const int MaxLongFrames = 200;
-    const int MaxCanvasHeight = 20000;   // v2.1: same ceiling as LongStitcher.MaxHeight
-    int lastWheelTick = 0;
-    internal int minLongShotHeight = 0;
-
-    // --- v2.1 long-shot driver (captain, 2026-10-26) --------------------------------
-    // The 90 ms sampler used to gate every frame on ImagesIdentical (5 rows x ~16 cols,
-    // EXACT equality). One animated pixel inside the region kept that gate shut forever,
-    // so the preview froze at one frame while the application scrolled normally --
-    // reproduced black-box, see out/cap-e2e/BASELINE.md. The driver below replaces it:
-    //   1. a coarse 24x18 luma signature answers "did the content move?",
-    //   2. a settle window (one quiet tick, or 900 ms when it never settles),
-    //   3. LongStitcher.Push() does the actual match (row fingerprints + anchor run),
-    //   4. failure is VISIBLE (preview warning + MessageBox on finish), never a stall.
-    internal LongStitcher longStitcher;
-    Bitmap longCandidate;
-    int longChangedSince;
-    int longLastCommit;      // last stitch attempt: bounds how long a moving region can stay unresolved
-    internal int longFailures;
-    internal bool longStitchFailed;
-    internal string longNotice;
-    ulong[] longSig;   // per-row fingerprints of the last sample (exact change detector)
-
-    internal void DisposeLongFrames()
-    {
-        // R21-1: longComposed belongs here too. "长截图 → 确定/另存 → 关窗" used to leave
-        // the stitched canvas (up to MaxCanvasHeight x width) alive until process exit in
-        // the warm process. Idempotent: null checks make repeated calls no-ops.
-        if (longComposed != null) { longComposed.Dispose(); longComposed = null; }
-        for (int i = 0; i < longFrames.Count; i++)
-        {
-            if (longFrames[i] != null) longFrames[i].Dispose();
-        }
-        longFrames.Clear();
-        longOffsets.Clear();
-        if (lastSample != null) { lastSample.Dispose(); lastSample = null; }
-        ReleaseLongDriver();
-    }
-
-    // v2.1: the stitcher owns the composed canvas and the pending candidate bitmap.
-    // Idempotent so every session-end path (close / cancel / restart) can call it.
-    internal void ReleaseLongDriver()
-    {
-        if (longCandidate != null) { longCandidate.Dispose(); longCandidate = null; }
-        if (longStitcher != null) { longStitcher.Dispose(); longStitcher = null; }
-        longSig = null;
-        longFailures = 0;
-        longStitchFailed = false;
-        longNotice = null;
-        lastSample = null;
-    }
-
-    internal void StartLongShotCapture()
-    {
-        isLongCapturing = true;
-
-        // 1. Punch out the selection region so the underlying application shows through!
-        var rgn = new Region(new Rectangle(0, 0, Width, Height));
-        rgn.Exclude(sel);
-        Region = rgn;
-
-        // 2. Clear previous frames (DisposeLongFrames also releases longComposed, R21-1)
-        DisposeLongFrames();
-        minLongShotHeight = 0;
-
-        // 3. Capture initial frame directly from the screen
-        Bitmap f0 = new Bitmap(sel.Width, sel.Height);
-        using (var g = Graphics.FromImage(f0))
-        {
-            g.CopyFromScreen(origin.X + sel.X, origin.Y + sel.Y, 0, 0, sel.Size);
-        }
-        longFrames.Add(f0);
-        longOffsets.Add(0);   // cumulative-offsets contract: frame 0 sits at canvas y=0
-        longComposed = (Bitmap)f0.Clone();
-        lastSample = null;
-        stableCount = 0;
-        wheelPending = false;
-        lastFrameReject = null;
-
-        // v2.1 driver: the stitcher starts from frame 0 and the signature baseline is
-        // taken from that same frame, so the very first tick only reports real motion.
-        if (longStitcher != null) { longStitcher.Dispose(); longStitcher = null; }
-        longStitcher = new LongStitcher();
-        longStitcher.MaxHeight = MaxCanvasHeight;
-        longStitcher.Reset(f0);
-        if (longCandidate != null) { longCandidate.Dispose(); longCandidate = null; }
-        longChangedSince = Environment.TickCount;
-        longLastCommit = Environment.TickCount;
-        longFailures = 0;
-        longStitchFailed = false;
-        longNotice = null;
-        longSig = LongStitcher.RowHashes(f0);
-
-        // 4. Setup preview (N-8: dynamic preview placement avoiding sel)
-        if (longPreview == null || longPreview.IsDisposed)
-            longPreview = new LongPreviewForm(this);
-
-        int prevW = longPreview.Width;
-        int px = sel.Right + 12;
-        if (px + prevW > Right) px = sel.Left - prevW - 12;
-        if (px < origin.X + 8) px = Math.Max(origin.X + 8, Right - prevW - 8);
-        int py = Math.Max(origin.Y + 20, sel.Top);
-        longPreview.Location = new Point(px, py);
-        longPreview.UpdatePreview(longComposed, longFrames.Count);
-        longPreview.Show(this);
-
-        // 5. Global keyboard hook
-        InstallKeyboardHook();
-
-        // 6. Start 90ms timer for stable-frame detection
-        if (longTimer == null)
-        {
-            longTimer = new System.Windows.Forms.Timer();
-            longTimer.Interval = 90;
-            longTimer.Tick += LongTimer_Tick;
-        }
-        longTimer.Start();
-    }
-
-    internal void LongTimer_Tick(object sender, EventArgs e)
-    {
-        if (!isLongCapturing || longStitcher == null) return;
-
-        // N-6: cap frames and canvas height to avoid OOM.
-        if (longFrames.Count >= MaxLongFrames || (longComposed != null && longComposed.Height >= MaxCanvasHeight))
-        {
-            StopLongShotCapture(Program.T("已达长截图最大上限，停止采集", "Max limit reached, capture stopped"));
-            return;
-        }
-
-        // A region that animates forever never settles: every tick replaces the candidate,
-        // so "time since the last change" would never expire. Force a verdict every 900 ms
-        // since the last attempt instead, otherwise the preview silently stays at frame 1
-        // -- exactly the frozen behaviour the user reported (m01805, m02057).
-        if (longCandidate != null && Environment.TickCount - longLastCommit > 900)
-        {
-            longLastCommit = Environment.TickCount;
-            CommitLongCandidate();
-        }
-
-        Bitmap sample = CaptureSelectionSample();
-        if (sample == null) return;
-
-        ulong[] sig = LongStitcher.RowHashes(sample);
-        bool wheelTick = wheelPending;
-        wheelPending = false;
-        bool changed = wheelTick || (longSig != null && !SignaturesEqual(longSig, sig));
-        longSig = sig;
-        Program.TLog("longtick changed=" + changed + " wheel=" + wheelTick +
-            " cand=" + (longCandidate != null) + " frames=" + longFrames.Count +
-            " reject=" + (lastFrameReject ?? "-"));
-
-        if (changed)
-        {
-            // The content moved: hold this sample as the candidate and wait for it to
-            // settle. No "identical to the previous frame" pre-gate -- that gate is what
-            // froze the preview at one frame for a year of animation.
-            if (longCandidate != null) longCandidate.Dispose();
-            longCandidate = sample;
-            longChangedSince = Environment.TickCount;
-            stableCount = 0;
-            return;
-        }
-
-        // Quiet tick: the pending candidate has settled, so it is safe to stitch it.
-        stableCount++;
-        if (longCandidate != null) CommitLongCandidate();
-        sample.Dispose();
-    }
-
-    // v2.1: stop sampling but keep the session alive -- Enter still finishes with
-    // whatever was stitched, and the notice stays on screen until then.
-    void StopLongShotCapture(string notice)
-    {
-        if (longTimer != null) longTimer.Stop();
-        if (string.IsNullOrEmpty(longNotice)) longNotice = notice;
-        if (longPreview != null && !longPreview.IsDisposed) longPreview.SetWarning(notice);
-    }
-
-    Bitmap CaptureSelectionSample()
-    {
-        try
-        {
-            Bitmap bmp = new Bitmap(sel.Width, sel.Height);
-            using (var g = Graphics.FromImage(bmp))
-            {
-                g.CopyFromScreen(origin.X + sel.X, origin.Y + sel.Y, 0, 0, sel.Size);
-            }
-            return bmp;
-        }
-        catch (Exception) { return null; }
-    }
-
-    // Exact change detector: per-row fingerprints of the whole selection. The previous
-    // 24x18 luma grid was too coarse for white pages with thin grey rules - scrolling
-    // 120 px moved no cell by more than 6 levels, so no candidate frame was ever
-    // produced and the preview froze on frame 1.
-    static bool SignaturesEqual(ulong[] a, ulong[] b)
-    {
-        if (a == null || b == null || a.Length != b.Length) return false;
-        for (int k = 0; k < a.Length; k++)
-        {
-            if (a[k] != b[k]) return false;
-        }
-        return true;
-    }
-
-    // v2.1: hand the settled candidate to the incremental stitcher. The old body did an
-    // exact-pixel FindVerticalOverlap against the previous frame, which cannot survive
-    // one animated pixel and returned a single candidate; LongStitcher matches row
-    // fingerprints against the whole canvas with a small mismatch budget instead.
-    internal bool CommitLongCandidate()
-    {
-        if (longCandidate == null || longStitcher == null) return false;
-        Bitmap candidate = longCandidate;
-        longCandidate = null;
-        bool grew = false;
-        try
-        {
-            grew = longStitcher.Push(candidate);
-        }
-        catch (Exception ex)
-        {
-            lastFrameReject = "push:" + ex.GetType().Name;
-            grew = false;
-        }
-
-        if (grew)
-        {
-            longFailures = 0;
-            longStitchFailed = false;
-            longNotice = null;
-            lastFrameReject = null;
-            AppendStitchedFrame(candidate);
-            if (longPreview != null && !longPreview.IsDisposed)
-            {
-                longPreview.UpdatePreview(longComposed, longFrames.Count);
-                longPreview.SetWarning(null);
-            }
-            candidate.Dispose();
-            return true;
-        }
-
-        lastFrameReject = longStitcher.LastReject;
-        if (longStitcher.TooLong)
-        {
-            longStitchFailed = true;
-            StopLongShotCapture(Program.T("拼接失败：内容过长，已保留可拼接部分",
-                                          "Stitch failed: content too long, kept the stitchable part"));
-        }
-        else if (lastFrameReject != "identical" && Environment.TickCount - lastWheelTick < 3000)
-        {
-            // Only count a failure while the user is actually scrolling: a blinking
-            // caret in an otherwise static page must not raise a false alarm.
-            longFailures++;
-            if (longFailures >= 2)
-            {
-                longStitchFailed = true;
-                string notice = Program.T("拼接失败：选区内容有动态变化，已保留可拼接部分",
-                                          "Stitch failed: dynamic content in the region, kept the stitchable part");
-                longNotice = notice;
-                if (longPreview != null && !longPreview.IsDisposed) longPreview.SetWarning(notice);
-            }
-        }
-        try
-        {
-            if (lastRejectedSample != null) lastRejectedSample.Dispose();
-            lastRejectedSample = (Bitmap)candidate.Clone();
-        }
-        catch (Exception) { }
-        candidate.Dispose();
-        return false;
-    }
-
-    // The stitcher owns the pixels. longFrames/longOffsets stay as the public
-    // bookkeeping (preview frame counter, probe/SelfTest fields) and longComposed is the
-    // snapshot clone the editor draws from after FinishLongShot. Offsets are recorded as
-    // "canvas height when the frame arrived" -- composition no longer uses them.
-    void AppendStitchedFrame(Bitmap candidate)
-    {
-        int at = longComposed == null ? 0 : longComposed.Height;
-        longFrames.Add((Bitmap)candidate.Clone());
-        longOffsets.Add(at);
-        if (longComposed != null) longComposed.Dispose();
-        longComposed = (Bitmap)longStitcher.Canvas.Clone();
-    }
-
-    // Kept for programmatic callers (probe/SelfTest): push one sample immediately
-    // instead of waiting for the settle window.
-    internal bool AddFrameIfNew(Bitmap currentSample)
-    {
-        if (!isLongCapturing || longStitcher == null || currentSample == null) return false;
-        if (longCandidate != null) { longCandidate.Dispose(); longCandidate = null; }
-        longCandidate = (Bitmap)currentSample.Clone();
-        return CommitLongCandidate();
-    }
-
-    internal void StepLongShot()
-    {
-        // Kept for programmatic triggers (e.g. tests)
-        LongTimer_Tick(null, EventArgs.Empty);
-    }
-
-    internal void FinishLongShot()
-    {
-        if (!isLongCapturing) return;
-        isLongCapturing = false;
-        if (longTimer != null) longTimer.Stop();
-        UninstallKeyboardHook();
-        if (longPreview != null && !longPreview.IsDisposed) longPreview.Hide();
-
-        // Restore overlay Region
-        Region = null;
-
-        // v2.1 / user rule m01805: a stitch failure must never be silent. The preview
-        // carried the warning while capturing; this is the last chance to tell the user
-        // the result is only the stitchable part. Suppressed for automated probes.
-        if (longStitchFailed && !Program.SuppressDialogs)
-        {
-            string msg = string.IsNullOrEmpty(longNotice)
-                ? Program.T("拼接失败：已保留可拼接部分", "Stitch failed: kept the stitchable part")
-                : longNotice;
-            try
-            {
-                MessageBox.Show(this, msg + Program.T("\n\n可继续编辑或保存。", "\n\nYou can keep editing or save it."),
-                    Program.T("长截图", "Long screenshot"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-            catch (Exception) { }
-        }
-
-        if (longComposed != null)
-        {
-            minLongShotHeight = longComposed.Height;
-            if (longComposed.Height > sel.Height)
-            {
-                int newH = longComposed.Height;
-                int maxH = Math.Max(screen.Height, sel.Y + newH + 50);
-                if (maxH > screen.Height)
-                {
-                    Bitmap newScreen = new Bitmap(screen.Width, maxH);
-                    using (var g = Graphics.FromImage(newScreen))
-                    {
-                        g.DrawImage(screen, 0, 0);
-                    }
-                    screen.Dispose();
-                    screen = newScreen;
-                }
-                sel.Height = newH;
-            }
-            using (var g = Graphics.FromImage(screen))
-            {
-                g.DrawImage(longComposed, sel.X, sel.Y);
-            }
-            InitBlit();
-        }
-        // N-6: free the intermediate frame bitmaps. longComposed stays alive: the editor's
-        // RenderResult expansion path and any post-finish inspection still read it. The
-        // session-end paths (Cancel / OnFormClosed) release it via DisposeLongFrames (R21-1).
-        DisposeLongFramesOnly();
-        Invalidate();
-        ShowBar();
-    }
-
-    // Frames + lastSample only; longComposed untouched. Used by FinishLongShot where the
-    // stitched canvas remains the editor's source of truth.
-    internal void DisposeLongFramesOnly()
-    {
-        for (int i = 0; i < longFrames.Count; i++)
-        {
-            if (longFrames[i] != null) longFrames[i].Dispose();
-        }
-        longFrames.Clear();
-        longOffsets.Clear();
-        if (lastSample != null) { lastSample.Dispose(); lastSample = null; }
-        // v2.1: the stitcher's canvas has already been cloned into longComposed, so the
-        // working copy (up to 20000 rows) can go now; the editor keeps the clone.
-        if (longCandidate != null) { longCandidate.Dispose(); longCandidate = null; }
-        if (longStitcher != null) { longStitcher.Dispose(); longStitcher = null; }
-        longSig = null;
-    }
-
-    internal void CancelLongShot()
-    {
-        if (!isLongCapturing) return;
-        isLongCapturing = false;
-        if (longTimer != null) longTimer.Stop();
-        UninstallKeyboardHook();
-        if (longPreview != null && !longPreview.IsDisposed) longPreview.Hide();
-        if (topBar != null && !topBar.IsDisposed) topBar.Show();
-        DisposeLongFrames();
-        if (longComposed != null) { longComposed.Dispose(); longComposed = null; }
-        ReleaseLongDriver();
-        minLongShotHeight = 0;
-    }
 
     // Save the framed area (with annotations) as a PNG the user picks.
     void SaveToFile()
@@ -1779,9 +1249,6 @@ public class SnipForm : Form
             editor = null;
         }
         UninstallMouseHook();
-        UninstallKeyboardHook();
-        if (longTimer != null) { longTimer.Stop(); longTimer.Dispose(); longTimer = null; }
-        DisposeLongFrames();
         if (screen != null) { screen.Dispose(); screen = null; }
         Program.TLog("close: hook done");
         if (Perf)
@@ -1807,8 +1274,6 @@ public class SnipForm : Form
             Program.LogCrash("OnFormClosed: no DSH window handle, restore skipped (parentPid=" + Program.ParentPid + ")");
         }
         Program.TLog("close: bar");
-        if (topBar != null && !topBar.IsDisposed) { topBar.Close(); topBar = null; }
-        if (longPreview != null && !longPreview.IsDisposed) { longPreview.Close(); longPreview = null; }
         if (bar != null) { bar.Hide(); bar.Close(); }
         Program.TLog("close: bar done");
         Program.TLog("close: gdi");
@@ -2224,9 +1689,7 @@ public class SnipForm : Form
             var old = sel;
             int dx = e.X - dragStart.X, dy = e.Y - dragStart.Y;
             int maxX = Math.Max(0, ClientSize.Width - selStart.Width);
-            int maxY = (minLongShotHeight > 0 || longComposed != null)
-                ? Math.Max(0, screen.Height - selStart.Height)
-                : Math.Max(0, ClientSize.Height - selStart.Height);
+            int maxY = Math.Max(0, ClientSize.Height - selStart.Height);
             int x = Math.Max(0, Math.Min(maxX, selStart.X + dx));
             int y = Math.Max(0, Math.Min(maxY, selStart.Y + dy));
             // Same containment rule as resizing, applied to moving: the frame owns what
@@ -2267,19 +1730,10 @@ public class SnipForm : Form
                 r = Math.Max(r, inside.Right);
                 b = Math.Max(b, inside.Bottom);
             }
-            int effectiveMinH = Math.Max(minLongShotHeight, (longComposed != null ? longComposed.Height : 0));
-            int maxBottom = (effectiveMinH > 0)
-                ? Math.Max(screen.Height, t + effectiveMinH)
-                : ClientSize.Height;
-            int bottomClamped = Math.Min(maxBottom, Math.Max(b, t + 6));
             sel = Rectangle.FromLTRB(
                 Math.Max(0, Math.Min(l, r - 6)), Math.Max(0, Math.Min(t, b - 6)),
-                Math.Min(ClientSize.Width, Math.Max(r, l + 6)), bottomClamped);
-            // N-1: During long screenshot session, lock sel.Height lower bound to effectiveMinH
-            if (effectiveMinH > 0 && sel.Height < effectiveMinH)
-            {
-                sel.Height = effectiveMinH;
-            }
+                Math.Min(ClientSize.Width, Math.Max(r, l + 6)),
+                Math.Min(ClientSize.Height, Math.Max(b, t + 6)));
             InvalidateChrome(paintedSel, sel);
             return;
         }
@@ -2783,36 +2237,11 @@ public class SnipForm : Form
         Invalidate();
     }
 
-    // N-7: the wheel and the 90ms timer both used to call LongTimer_Tick, and every
-    // call replaced lastSample -- so a wheel tick reset the "stable for one beat"
-    // window mid-motion and frames were missed or double-counted. The wheel now only
-    // marks the need for a sample; the timer is the single sampler.
-    internal volatile bool wheelPending;
-    internal string lastFrameReject;
-    internal Bitmap lastRejectedSample;
-    protected override void OnMouseWheel(MouseEventArgs e)
-    {
-        base.OnMouseWheel(e);
-        if (isLongCapturing && sel.Contains(e.Location))
-        {
-            if (e.Delta < 0)
-            {
-                wheelPending = true;
-                stableCount = 0;
-                lastWheelTick = Environment.TickCount;
-            }
-        }
-    }
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
         if (IsDisposed || Disposing) return;   // messages can still arrive after Dispose
         base.OnKeyDown(e);
-        if (isLongCapturing)
-        {
-            if (e.KeyCode == Keys.Enter) { FinishLongShot(); e.Handled = true; e.SuppressKeyPress = true; return; }
-            if (e.KeyCode == Keys.Escape) { CancelLongShot(); e.Handled = true; e.SuppressKeyPress = true; return; }
-        }
         // While the text box is open it owns Enter and Escape: Enter commits the text
         // and Escape cancels it. Without this, KeyPreview let the form capture the
         // whole screenshot on Enter and throw the selection away on Escape.
@@ -2846,11 +2275,6 @@ public class SnipForm : Form
     public bool HandleShortcut(Keys key, bool control)
     {
         if (closing || IsDisposed) return false;
-        if (isLongCapturing)
-        {
-            if (key == Keys.Enter) { FinishLongShot(); return true; }
-            if (key == Keys.Escape) { CancelLongShot(); return true; }
-        }
         if (textBox != null && textBox.Visible)
         {
             if (key == Keys.Enter) { CommitText(); return true; }
@@ -2886,19 +2310,12 @@ public class SnipForm : Form
 
     internal Bitmap RenderResult()
     {
-        int effectiveMinH = Math.Max(minLongShotHeight, (longComposed != null ? longComposed.Height : 0));
-        if (effectiveMinH > 0 && sel.Height < effectiveMinH)
-        {
-            sel.Height = effectiveMinH;
-        }
-
         if (sel.Bottom > screen.Height)
         {
             Bitmap expanded = new Bitmap(screen.Width, sel.Bottom);
             using (var g = Graphics.FromImage(expanded))
             {
                 g.DrawImage(screen, 0, 0);
-                if (longComposed != null) g.DrawImage(longComposed, sel.X, sel.Y);
             }
             screen.Dispose();
             screen = expanded;
@@ -4691,291 +4108,5 @@ public class LoupeForm : Form
         }
     }
 }
-
-public class Settings
-{
-    public bool HideDsh = true;
-    public bool LongShot = false;
-
-    public static string SettingsPath
-    {
-        get
-        {
-            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            return System.IO.Path.Combine(System.IO.Path.Combine(local, "dsh-screenshot"), "settings.json");
-        }
-    }
-
-    public static Settings Load()
-    {
-        var s = new Settings();
-        try
-        {
-            string p = SettingsPath;
-            if (System.IO.File.Exists(p))
-            {
-                string json = System.IO.File.ReadAllText(p);
-                if (json.Contains("\"hideDsh\": false") || json.Contains("\"hideDsh\":false"))
-                    s.HideDsh = false;
-                else if (json.Contains("\"hideDsh\": true") || json.Contains("\"hideDsh\":true"))
-                    s.HideDsh = true;
-                if (json.Contains("\"longShot\": true") || json.Contains("\"longShot\":true"))
-                    s.LongShot = true;
-                else if (json.Contains("\"longShot\": false") || json.Contains("\"longShot\":false"))
-                    s.LongShot = false;
-            }
-        }
-        catch (Exception) { }
-        return s;
-    }
-
-    public void Save()
-    {
-        try
-        {
-            string p = SettingsPath;
-            string dir = System.IO.Path.GetDirectoryName(p);
-            if (!System.IO.Directory.Exists(dir))
-                System.IO.Directory.CreateDirectory(dir);
-            string json = "{\n  \"hideDsh\": " + (HideDsh ? "true" : "false") + ",\n  \"longShot\": " + (LongShot ? "true" : "false") + "\n}\n";
-            System.IO.File.WriteAllText(p, json);
-        }
-        catch (Exception) { }
-    }
-}
-
-public class TopBarForm : Form
-{
-    readonly SnipForm ownerForm;
-    readonly Settings settings;
-    readonly CheckBox chkHide;
-    readonly CheckBox chkLong;
-
-    public TopBarForm(SnipForm owner, Settings st)
-    {
-        ownerForm = owner;
-        settings = st != null ? st : new Settings();
-
-        FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
-        StartPosition = FormStartPosition.Manual;
-        TopMost = true;
-        Size = new Size(260, 36);
-        BackColor = Color.FromArgb(35, 39, 46);
-
-        chkHide = new CheckBox();
-        chkHide.Text = Program.T("隐藏 DSH 窗口", "Hide DSH window");
-        chkHide.ForeColor = Color.White;
-        chkHide.Font = new Font("Microsoft YaHei UI", 9F);
-        chkHide.AutoSize = true;
-        chkHide.Checked = settings.HideDsh;
-        chkHide.CheckedChanged += new EventHandler(OnHideChanged);
-        Controls.Add(chkHide);
-
-        chkLong = new CheckBox();
-        chkLong.Text = Program.T("长截图", "Long screenshot");
-        chkLong.ForeColor = Color.White;
-        chkLong.Font = new Font("Microsoft YaHei UI", 9F);
-        chkLong.AutoSize = true;
-        chkLong.Checked = settings.LongShot;
-        chkLong.CheckedChanged += new EventHandler(OnLongChanged);
-        Controls.Add(chkLong);
-
-        // Lay the row out from the measured text: the English labels are roughly twice as
-        // wide and were clipped by a hard-coded 260 px window.
-        chkHide.Location = new Point(14, 8);
-        chkLong.Location = new Point(chkHide.Left + chkHide.PreferredSize.Width + 18, 8);
-        Size = new Size(chkLong.Left + chkLong.PreferredSize.Width + 14, 36);
-    }
-
-    void OnHideChanged(object sender, EventArgs e)
-    {
-        settings.HideDsh = chkHide.Checked;
-        settings.Save();
-        if (ownerForm != null)
-            ownerForm.SetHideDsh(chkHide.Checked);
-    }
-
-    void OnLongChanged(object sender, EventArgs e)
-    {
-        settings.LongShot = chkLong.Checked;
-        settings.Save();
-        if (ownerForm != null)
-            ownerForm.SetLongShotMode(chkLong.Checked);
-    }
-
-    public void PositionAt(Point origin, Size screenSize)
-    {
-        int x = origin.X + (screenSize.Width - Width) / 2;
-        int y = origin.Y + 12;
-        Location = new Point(x, y);
-    }
-
-    protected override bool ShowWithoutActivation
-    {
-        get { return true; }
-    }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            CreateParams cp = base.CreateParams;
-            cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
-            cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW
-            return cp;
-        }
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        base.OnPaint(e);
-        using (var pen = new Pen(Color.FromArgb(65, 118, 230), 2))
-        {
-            e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-        }
-    }
-}
-
-public class LongPreviewForm : Form
-{
-    readonly SnipForm ownerForm;
-    Bitmap previewBmp;
-    int frameCount;
-
-    public LongPreviewForm(SnipForm owner)
-    {
-        ownerForm = owner;
-        FormBorderStyle = FormBorderStyle.None;
-        ShowInTaskbar = false;
-        StartPosition = FormStartPosition.Manual;
-        TopMost = true;
-        // 190 px is the floor: the English captions are ~30% longer than the Chinese ones,
-        // so the width is measured from both locales instead of trusting the floor (R28).
-        int panelW = 190;
-        using (var f9 = new Font("Microsoft YaHei UI", 9F))
-        using (var f8 = new Font("Microsoft YaHei UI", 8F))
-        {
-            panelW = Math.Max(panelW, TextRenderer.MeasureText("长截图预览 (3帧)", f9).Width + 20);
-            panelW = Math.Max(panelW, TextRenderer.MeasureText("Long screenshot (3 frames)", f9).Width + 20);
-            panelW = Math.Max(panelW, TextRenderer.MeasureText("滚轮继续 | Enter确定 | Esc取消", f8).Width + 16);
-            panelW = Math.Max(panelW, TextRenderer.MeasureText("Scroll · Enter done · Esc cancel", f8).Width + 16);
-        }
-        Size = new Size(panelW, 430);
-        BackColor = Color.FromArgb(28, 32, 38);
-        DoubleBuffered = true;
-    }
-
-    // N-6: surface "capture stopped at max frames/canvas height" inside the preview.
-    string warning;
-    public void SetWarning(string text)
-    {
-        warning = text;
-        Invalidate();
-    }
-
-    public void UpdatePreview(Bitmap full, int frames)
-    {
-        frameCount = frames;
-        if (full != null)
-        {
-            Size psize = LongShot.PreviewSize(full.Width, full.Height, 140, 340);
-            if (previewBmp != null) previewBmp.Dispose();
-            previewBmp = new Bitmap(psize.Width, psize.Height);
-            using (var g = Graphics.FromImage(previewBmp))
-            {
-                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                g.DrawImage(full, new Rectangle(0, 0, psize.Width, psize.Height), new Rectangle(0, 0, full.Width, full.Height), GraphicsUnit.Pixel);
-            }
-        }
-        Invalidate();
-    }
-
-    protected override bool ShowWithoutActivation
-    {
-        get { return true; }
-    }
-
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            CreateParams cp = base.CreateParams;
-            cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
-            cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW
-            return cp;
-        }
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        base.OnPaint(e);
-        var g = e.Graphics;
-        using (var pen = new Pen(Color.FromArgb(65, 118, 230), 2))
-        {
-            g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
-        }
-        using (var b = new SolidBrush(Color.White))
-        using (var f = new Font("Microsoft YaHei UI", 9F))
-        {
-            g.DrawString(Program.T("长截图预览 (", "Long screenshot (") + frameCount +
-                Program.T("帧)", " frames)"), f, b, 10, 10);
-            using (var fb = new Font("Microsoft YaHei UI", 8F))
-            {
-                g.DrawString(Program.T("滚轮继续 | Enter确定 | Esc取消", "Scroll · Enter done · Esc cancel"),
-                    fb, Brushes.LightGray, 8, Height - 24);
-            }
-        }
-        if (previewBmp != null)
-        {
-            int px = (Width - previewBmp.Width) / 2;
-            int py = 36;
-            g.DrawImage(previewBmp, px, py);
-            using (var p = new Pen(Color.FromArgb(100, 100, 100)))
-            {
-                g.DrawRectangle(p, px - 1, py - 1, previewBmp.Width + 1, previewBmp.Height + 1);
-            }
-        }
-        // Drawn last and on its own strip: a one-line DrawString clipped the notice at the
-        // panel edge, so the user saw "拼接失败：...已" and no reason.
-        if (!string.IsNullOrEmpty(warning))
-        {
-            var strip = new Rectangle(4, Height - 104, Width - 8, 76);
-            using (var bg = new SolidBrush(BackColor)) g.FillRectangle(bg, strip);
-            using (var fb = new Font("Microsoft YaHei UI", 8F))
-            {
-                TextRenderer.DrawText(g, warning, fb, Rectangle.Inflate(strip, -4, -2), Color.OrangeRed,
-                    TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
-            }
-        }
-    }
-
-    protected override void OnFormClosed(FormClosedEventArgs e)
-    {
-        if (previewBmp != null) { previewBmp.Dispose(); previewBmp = null; }
-        base.OnFormClosed(e);
-    }
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 

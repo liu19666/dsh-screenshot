@@ -17,10 +17,9 @@
 # 只做接线自检（不构建、不启动原生工具、不碰 profile），应 exit 0
 pwsh -NoProfile -File tools/e2e.ps1 -DryRun
 
-# 完整证据链（12 步）：wiring -> build -Tests -> EngineTests -> SnipTool --selftest
-#             -> SnipTool --longshot-probe -> SnipTool --longshot-probe wheelOnly=false（负控，必须非零退出）
+# 完整证据链（10 步）：wiring -> build -Tests -> EngineTests -> SnipTool --selftest
 #             -> SnipTool --crash-probe
-#             -> 真实槽位契约门（tools/client-contract.mjs，第 8 步，硬门）
+#             -> 真实槽位契约门（tools/client-contract.mjs，第 6 步，硬门）
 #             -> 插件冒烟 -> install.ps1 -WhatIf（安装计划）-> npm pack（打包自检）-> 文档检查
 pwsh -NoProfile -File tools/e2e.ps1
 
@@ -32,7 +31,7 @@ node tools/client-contract.mjs --update-baseline --reason "为什么这批字节
 # 原生程序已构建、暂时不想重编：仍然跑插件冒烟 + 安装计划 + 打包 + 文档检查
 pwsh -NoProfile -File tools/e2e.ps1 -SkipBuild
 
-# 跳过原生步骤（engine、selftest、longshot-probe、longshot-negative、crash-probe），只做 JS / 安装计划 / 打包 / 文档检查
+# 跳过原生步骤（engine、selftest、crash-probe），只做 JS / 安装计划 / 打包 / 文档检查
 pwsh -NoProfile -File tools/e2e.ps1 -SkipBuild -SkipNative
 
 # 所有模块都应已实现时使用严格模式：pending 也算失败
@@ -43,15 +42,14 @@ pwsh -NoProfile -File tools/e2e.ps1 -Strict
 `out/evidence/SUMMARY.md`、`out/evidence/logs/*.log`、`out/evidence/selftest/*.png` + `summary.json`、
 `out/evidence/engine.json` + `out/evidence/png/engine/*.png`、`out/evidence/ev-contract/client-contract.json`
 （真实槽位契约门：15 项检查 + 旧 2.0.0 bundle 负控）、`out/evidence/plugin-smoke.json`、
-`out/evidence/longshot/longshot_probe.json`（长截图真实链路探针）、
 `out/evidence/crashprobe/crash_probe.json`（崩溃日志探针）、
 以及 `npm pack` 产出的 `dsh-screenshot-<version>.tgz`（package 步骤会校验 tgz 文件白名单）。
 
 ### 版本化验收门禁 `tools/accept.ps1`（G-7）
 
 `tools/e2e.ps1` 只负责跑链路并留下证据；`tools/accept.ps1` 是**判定版**：它调用前者，再逐条断言
-各产物（engine.json 的 8 项检测、selftest 的 13 条 criteria、longshot 探针字段、crash 探针字节增长、
-契约门 15 项 + 旧 bundle 三类负控、插件冒烟 8 项、文档步 PASS、可选 N1 回归 harness），
+各产物（engine.json 的 5 项检测、selftest 的 5 条 criteria + 6 张 PNG、crash 探针字节增长、
+契约门 15 项 + 旧 bundle 三类负控、插件冒烟 8 项、文档步 PASS），
 并对 `bin/*.exe`、`dist/*.tgz`、仓库根 `*.tgz` 取前后 sha256 快照。任一条失败即 `exit 1`。
 
 ```powershell
@@ -108,7 +106,7 @@ Get-ChildItem -Recurse -File -Filter 'R*.png' | Measure-Object   # Count = 0
 | --- | --- | --- | --- |
 | R1 | `out/evidence/manual/R1-scissors.png` | ⚠ 未产出（待补人工截图） | — |
 | R2 | `out/evidence/manual/R2-overlay.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a1_screen_highlight.png` |
-| R3 | `out/evidence/manual/R3-switch-off.png` | ⚠ 未产出（待补人工截图） | — |
+| R3 | `out/evidence/manual/R3-no-topbar.png` | ⚠ 未产出（待补人工截图） | — |
 | R4 | `out/evidence/manual/R4-right-click.png` | ⚠ 未产出（待补人工截图） | — |
 | R5 | `out/evidence/manual/R5-restored.png` | ⚠ 未产出（待补人工截图） | — |
 | R6 | `out/evidence/manual/R6-desktop.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a1_screen_highlight.png` |
@@ -123,13 +121,11 @@ Get-ChildItem -Recurse -File -Filter 'R*.png' | Measure-Object   # Count = 0
 | R11 | `out/evidence/manual/R11-dragging.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a2_drag_selection.png` |
 | R11 | `out/evidence/manual/R11-result.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a2_drag_selection.png` |
 | R12 | `out/evidence/manual/R12-misclick.png` | ⚠ 未产出（待补人工截图） | — |
-| R13 | `out/evidence/manual/R13-topbar.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a3_a4_topbar.png` |
-| R14 | `out/evidence/manual/R14-longshot.png` | ⚠ 未产出（待补人工截图） | `out/evidence/png/engine/engine_longshot_composed.png` |
-| R15 | `out/evidence/manual/R15-preview-grow.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a5_longshot_preview.png` |
-| R15 | `out/evidence/manual/R15-preview-start.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a5_longshot_preview.png` |
-| R16 | `out/evidence/manual/R16-longshot-editor.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a5_longshot_preview.png` |
-| R17 | `out/evidence/manual/R17-longshot-exit.png` | ⚠ 未产出（待补人工截图） | — |
-| R18 | `out/evidence/manual/R18-editor-longshot.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a6_editor_toolbar.png` |
+| R13 | `out/evidence/manual/R13-no-topbar.png` | ⚠ 未产出（待补人工截图） | `Select-String src\SnipTool.cs -Pattern 'Settings\.Load'` 无匹配 |
+| R14 | — | 已取消（v2.1 取消长截图） | `grep LongShot src/*.cs` 无匹配 |
+| R15 | — | 已取消（v2.1 取消长截图） | 同上 |
+| R16 | — | 已取消（v2.1 取消长截图） | 同上 |
+| R17 | `out/evidence/manual/R17-leftclick-exit.png` | ⚠ 未产出（待补人工截图） | — |
 | R18 | `out/evidence/manual/R18-editor-normal.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a6_editor_toolbar.png` |
 | R19 | `out/evidence/manual/R19-toolbar-en.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a6_editor_toolbar.png` |
 | R19 | `out/evidence/manual/R19-toolbar-zh.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a6_editor_toolbar.png` |
@@ -145,9 +141,9 @@ Get-ChildItem -Recurse -File -Filter 'R*.png' | Measure-Object   # Count = 0
 | R26 | `out/evidence/manual/R26-crash-log.png` | ⚠ 未产出（待补人工截图） | `out/evidence/crashprobe/crash_probe.json`（JSON 日志轮转证据，不是截图） |
 | R27 | `out/evidence/manual/R27-single-instance.png` | ⚠ 未产出（待补人工截图） | — |
 | R28 | `out/evidence/manual/R28-en-dark.png` | ⚠ 未产出（待补人工截图） | — |
-| R28 | `out/evidence/manual/R28-en-light.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a3_a4_topbar.png`（浅色顶栏） |
+| R28 | `out/evidence/manual/R28-en-light.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a6_editor_toolbar.png`（浅色主题） |
 | R28 | `out/evidence/manual/R28-zh-dark.png` | ⚠ 未产出（待补人工截图） | — |
-| R28 | `out/evidence/manual/R28-zh-light.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a3_a4_topbar.png`（浅色顶栏） |
+| R28 | `out/evidence/manual/R28-zh-light.png` | ⚠ 未产出（待补人工截图） | `out/evidence/selftest/a6_editor_toolbar.png`（浅色主题） |
 | R29 | `out/evidence/manual/R29-offline.png` | ⚠ 未产出（待补人工截图） | — |
 
 ---
@@ -173,51 +169,55 @@ Get-ChildItem -Recurse -File -Filter 'R*.png' | Measure-Object   # Count = 0
 
 **操作**
 1. 打开（或刷新）DSH 会话页，看输入框右侧从左到右的顺序：剪刀按钮 → 模型/block-picker → 话筒。
-2. 鼠标悬停剪刀按钮读出提示文字；点击一次，确认进入截图模式（屏幕变暗 + 十字光标，细节见 R2）。
+2. 鼠标悬停剪刀按钮读出提示文字；**左键**点一次、退出后再**右键**点一次，确认两次都进入截图模式（屏幕变暗 + 十字光标，细节见 R2/R3），且右键时浏览器自带的上下文菜单不出现。
 3. 与话筒按钮对比：点击区 32×32、圆角 8px、hover 底色一致；把窗口缩到很窄，确认按钮不被挤出（`flex: none`）。
 4. 展开话筒（开始语音输入）→ 观察剪刀按钮消失；退出展开 → 确认按钮回来。
 
 **预期**
 - 位置：话筒左侧、block-picker 左侧。
-- 外观：32×32、圆角 8px、hover 底色与话筒按钮同源变量；提示「截图」/「Screenshot」。
+- 外观：32×32、圆角 8px、hover 底色与话筒按钮同源变量；提示「左键保留窗口，右键最小化窗口」/「Left-click: keep window · Right-click: minimize window」。
 - 话筒展开期间按钮不可见（见「已知限制」），收起后立刻恢复。
 
 **证据**
 - 截图：`out/evidence/manual/R1-scissors.png` ⚠ 未产出（待补人工截图）；需要收起态、展开态各一张。
 - 机器证据（可复现，但只证明槽位与 order，不证明观感）：`node tools/client-contract.mjs --json out/evidence/ev-contract/client-contract.json`
   → `registrations` 里出现 `conversation.input.right/shot-action@100`，15 项契约 checks 全 PASS。
-- `node tools/plugin-smoke.mjs --root . --quiet`：`client-load` 走真实槽位契约门（一键链路第 8 步，见上文）。
+- `node tools/plugin-smoke.mjs --root . --quiet`：`client-load` 走真实槽位契约门（一键链路第 6 步，见上文）。
 
-## R2 点击剪刀进入原生截图覆盖层
+## R2 点击剪刀进入原生截图覆盖层（左键/右键两种入口）
 
 **操作**
 1. 记录点击前 DSH 窗口位置与是否可见。
-2. 点击剪刀按钮，观察 ≤500 ms 内屏幕变化。
+2. **左键**点击剪刀按钮，观察 ≤500 ms 内屏幕变化。
+3. 右键 / ESC 退出后，再**右键**点击剪刀按钮，观察 DSH 是否被最小化。
 
 **预期**
-- 出现覆盖整个虚拟桌面的原生覆盖层，鼠标变十字，屏幕整体变暗，DSH 窗口（若「隐藏 DSH 窗口」为开）消失。
+- 两次都出现覆盖整个虚拟桌面的原生覆盖层，鼠标变十字，屏幕整体变暗。
+- 左键进入：DSH 保持原样（不隐藏、不最小化），退出后也不改动 DSH 状态。
+- 右键进入：DSH 被最小化/隐藏，退出后按 R5 恢复；浏览器自带的右键上下文菜单必须被阻止（`preventDefault`）。
 - 不出现浏览器式的页面跳转、白屏或二次确认对话框。
-- 启动管线：宿主 `lib/index.js` 以 `bin/SnipTool.exe --serve --parent <pid> --out <dir> --client` 启动暖进程；每次点击经命名管道 `\\.\pipe\dsh-snip-show` 发送 `show theme=dark lang=zh client=1 out=<dir>` 唤醒；暖进程不在时用同参数加 `--show` 启动一次性会话（`client=1` 表示由 DSH 前端自己粘贴，见 R23）。
+- 启动管线：宿主 `lib/index.js` 以 `bin/SnipTool.exe --serve --parent <pid> --out <dir> --client` 启动暖进程；每次点击经命名管道 `\\.\pipe\dsh-snip-show` 发送 `show theme=dark lang=zh client=1 out=<dir> hide=1|0` 唤醒（`hide=0` 左键、`hide=1` 右键）；暖进程不在时用同参数加 `--show` 并附带 `--hide`/`--no-hide` 启动一次性会话（`client=1` 表示由 DSH 前端自己粘贴，见 R23）。
 
 **证据**
-- 截图：`out/evidence/manual/R2-overlay.png` ⚠ 未产出（待补人工截图）。
+- 截图：`out/evidence/manual/R2-overlay.png`（左键）与 `out/evidence/manual/R2-overlay-hidden.png`（右键，DSH 已最小化） ⚠ 未产出（待补人工截图）。
 - 自动化：`bin/SnipTool.exe --selftest out/evidence/selftest` 产出的 overlay PNG（`out/evidence/selftest/`）。
 - 命令：`Get-CimInstance Win32_Process -Filter "Name='SnipTool.exe'" | Select-Object ProcessId,CommandLine`（命令行应含 `--serve --parent ... --out ... --client`，且只有一个热进程）。
+- 命令：`node tools/plugin-smoke.mjs --root . --quiet` 的 `cli-sync` 断言要求 `--hide`/`--no-hide`、`hide=1`/`hide=0` 同时存在于 host 与原生两侧，且 `lib/client.js` 里出现 `hide: !!hide`。
 
-## R3 顶部「隐藏 DSH 窗口」开关（默认开、持久化）
+## R3 截图界面没有顶部开关栏（v2.1）
 
 **操作**
-1. 首次进入覆盖层，观察顶栏开关初始状态。
-2. 关闭该开关，右键退出，再进入一次。
-3. 完全退出 DSH 并重新启动，再进入覆盖层。
+1. 进入覆盖层，观察画面顶部是否还有开关栏或复选框。
+2. 在覆盖层内移动、拖拽、再右键退出，确认顶栏不会出现。
 
 **预期**
-- 初始为「开」；关闭后本次覆盖层出现时 DSH 不隐藏，退出后也不恢复。
-- 重启 DSH 后仍保持上一次的选择（持久化到设置文件，而非仅内存）。
+- 顶部**没有**「隐藏 DSH 窗口」「长截图」两个开关（v2.0 的顶栏 `TopBarForm` 已整体删除）。
+- 隐藏与否只由入口点击方式决定（左键不隐藏、右键隐藏，见 R2），截图界面内不再有第二处入口。
+- 不再读写 `%LOCALAPPDATA%\dsh-screenshot\settings.json`（`Settings` 类已删除）；该文件若残留在磁盘上属旧版本遗留，不参与任何判断。
 
 **证据**
-- 截图：`out/evidence/manual/R3-switch-off.png` ⚠ 未产出（待补人工截图）。
-- 命令：`Get-Content "$env:LOCALAPPDATA\dsh-screenshot\settings.json"`，确认 `hideDsh`（本次截图是否隐藏 DSH 窗口）与 `longShot`（是否默认开启长截图）两个字段；设置由覆盖层顶栏开关写入，重启 DSH 后仍生效。
+- 截图：`out/evidence/manual/R3-no-topbar.png` ⚠ 未产出（待补人工截图）。
+- 命令：`Select-String -Path src\SnipTool.cs -Pattern 'Settings\.Load|TopBarForm'` 应无匹配（v2.1 起这两者都不存在）。
 
 ## R4 右键退出
 
@@ -236,7 +236,7 @@ Get-ChildItem -Recurse -File -Filter 'R*.png' | Measure-Object   # Count = 0
 ## R5 退出后恢复 DSH
 
 **操作**
-1. 让「隐藏 DSH 窗口」为开，进入覆盖层后分别用右键、ESC、取消（红色 X）退出。
+1. 用**右键**点剪刀进入覆盖层（此时 DSH 被最小化），分别用右键、ESC、取消（红色 X）退出。
 2. 检查 DSH 窗口位置、尺寸、是否置顶、是否获得焦点。
 
 **预期**
@@ -339,80 +339,91 @@ Get-ChildItem -Recurse -File -Filter 'R*.png' | Measure-Object   # Count = 0
 - 截图：`out/evidence/manual/R12-misclick.png` ⚠ 未产出（待补人工截图）。
 - 命令：`Get-Content "$env:TEMP\dsh-snip-error.log" -Tail 20`（文件不存在或没有新行即未崩溃；崩溃日志为无条件追加写入，见 R26）。
 
-## R13 顶栏开关（隐藏 DSH、长截图）
+## R13 截图界面没有顶部开关栏（隐藏 DSH / 长截图 均已移除）
 
 **操作**
-1. 观察覆盖层顶栏的开关数量、位置与默认值。
-2. 用 Tab 键尝试键盘聚焦，按空格切换。
+1. 进入覆盖层，从上到下扫一遍画面，确认顶部没有开关栏。
+2. 用 Tab 键在覆盖层内移动焦点，确认不会聚焦到任何复选框。
 
 **预期**
-- 顶栏包含「隐藏 DSH 窗口」与「长截图」两个开关；长截图默认关闭；开关可键盘聚焦与切换；位置固定不随目标变化。
+- 顶栏整体不存在：既没有「隐藏 DSH 窗口」，也没有「长截图」（v2.0 的 `TopBarForm` 已删除）。
+- 隐藏行为只来自入口点击方式（左键不隐藏 / 右键隐藏，见 R2），覆盖层内没有任何开关能改变它。
+- 不再持久化任何截图设置（`Settings` 类已删除，不读写 `%LOCALAPPDATA%\dsh-screenshot\settings.json`）。
 
 **证据**
-- 截图：`out/evidence/manual/R13-topbar.png` ⚠ 未产出（待补人工截图）。
+- 截图：`out/evidence/manual/R13-no-topbar.png` ⚠ 未产出（待补人工截图）。
+- 命令：`Select-String -Path src\SnipTool.cs -Pattern 'TopBarForm|Settings\.Load|SetHideDsh|SetLongShotMode'` 应无匹配。
 
-## R14 长截图滚轮捕获与回滚
+## R14 长截图已取消（不再有滚轮拼接）
 
 **操作**
-1. 打开「长截图」，在内容较长的窗口内拖选区域。
-2. 向下滚动滚轮 5–10 次；中途向上滚动一次；继续向下滚到文档底部。
+1. 进入覆盖层，选定一块区域后滚动鼠标滚轮。
+2. 观察是否出现任何「长截图」提示、预览窗口或额外行为。
 
 **预期**
-- 每次向下滚动追加新内容并无缝拼接，无重复条带、无缺失；向上滚动立即停止捕获并回滚上一帧（内容不重复不缺失）；到达底部自动停止。
+- 滚轮不触发任何拼接：没有预览窗口、没有帧计数、没有长图输出；滚轮事件照常交给光标下的应用（本插件不再拦它）。
+- 覆盖层不因滚轮出现卡顿、重复截图或异常退出。
+- v2.1 起 `src/LongShot.cs` 与覆盖层的长截图驱动、`--longshot-probe` 探针全部删除，R14 不再有拼接验收对象；此处只验「滚轮无副作用」。
 
 **证据**
-- 截图：`out/evidence/manual/R14-longshot.png`（最终长图，高度远大于选区） ⚠ 未产出（待补人工截图）。
-- 自动化：EngineTests 中 `FindVerticalOverlap` / `Compose` 用例（`out/evidence/engine.json`）。
+- 截图：`out/evidence/manual/R14-wheel-noop.png` ⚠ 未产出（待补人工截图）。
+- 命令：`Select-String -Path src\*.cs,lib\*.js -Pattern 'LongShot|longshot|长截图'` 应无匹配。
 
-## R15 长截图等比缩小预览
+## R15 长截图预览已取消（不再有预览窗口）
 
 **操作**
-1. 长截图内容从少量增长到一屏以上，观察预览窗口的位置与尺寸。
-2. 把选区放到屏幕边缘，确认预览不溢出。
+1. 进入覆盖层并选定区域，滚动滚轮多次。
+2. 检查选区旁、屏幕边缘是否出现任何附加窗口。
 
 **预期**
-- 预览贴在选区旁不遮挡选区；始终按比例缩放（保持纵横比），内容增长时同步变长，最大不超过屏幕可用高度。
+- 屏幕上只有覆盖层一个窗口；不存在「长截图预览 (N帧)」面板，也不存在它的提示文案。
+- 选区旁不出现任何浮动窗口遮挡目标内容。
 
 **证据**
-- 截图 2 张：`out/evidence/manual/R15-preview-start.png`、`R15-preview-grow.png` ⚠ 未产出（待补人工截图）。
-- 自动化：EngineTests 中 `PreviewSize` 用例。
+- 截图：`out/evidence/manual/R15-no-preview.png` ⚠ 未产出（待补人工截图）。
+- 命令：`Get-Process SnipTool -ErrorAction SilentlyContinue | Select-Object Id,MainWindowTitle`（截图期间只应有一个覆盖层窗口）。
 
-## R16 长截图完成后进入同一编辑器
+## R16 普通截图与（已取消的）长截图共用编辑器的口径
 
 **操作**
-1. 长截图捕获若干帧后点击「完成」或按 Enter。
-2. 观察进入的编辑器与普通截图是否同一个。
+1. 普通截图确认后进入编辑器，记录窗口标题、工具栏顺序与快捷键。
+2. 连续再做两次普通截图，逐项对比。
 
 **预期**
-- 进入同一个编辑器，画布为拼接后的长图；工具栏与普通截图一致；取消/确定行为按 R22/R24。
+- 只有一条入口：普通截图进入统一编辑器；长截图（v2.1 已取消）不再产生第二条路径，因此不存在「两条流程是否同一个编辑器」的问题。
+- 同一套工具栏与同一窗口类（标题/图标一致），工具状态、快捷键、颜色粗细默认值一致。
 
 **证据**
-- 截图：`out/evidence/manual/R16-longshot-editor.png` ⚠ 未产出（待补人工截图）。
+- 截图：`out/evidence/manual/R16-editor-normal.png` ⚠ 未产出（待补人工截图）。
+- 自动化：`out/evidence/selftest/a6_editor_toolbar.png`（`--selftest` 产出）。
 
-## R17 长截图退出后恢复 DSH
+## R17 左键进入的会话退出后不影响 DSH（右键进入见 R5）
 
 **操作**
-1. 长截图模式右键退出（再试一次取消按钮）。
-2. 检查预览窗口、临时文件、DSH 状态。
+1. 记录 DSH 窗口位置、尺寸、层级与焦点状态。
+2. 用**左键**点剪刀进入覆盖层（DSH 不隐藏），分别用右键、ESC、取消（红色 X）退出三次。
+3. 每次退出后复查 DSH 窗口状态。
 
 **预期**
-- 覆盖层与预览全部关闭，DSH 按 R5 恢复；结果目录 `%TEMP%\dsh-screenshot-v2` 只保留最近一次结果与状态文件（`dsh-snip-last.png`、`dsh-snip-state.json`），不产生逐帧临时文件堆积（长截图帧在内存中合成）。
+- DSH 的位置/尺寸/层级不变，仍在前台可用：本来就没被隐藏，退出时不得把它最小化或改尺寸。
+- 结果目录 `%TEMP%\dsh-screenshot-v2` 只保留最近一次结果与状态文件（`dsh-snip-last.png`、`dsh-snip-state.json`）。
+- 右键进入的隐藏/恢复口径见 R5；两种入口的恢复行为都不得留下「DSH 不见了」的残局。
 
 **证据**
-- 截图：`out/evidence/manual/R17-longshot-exit.png` ⚠ 未产出（待补人工截图）。
-- 命令：`Get-ChildItem "$env:TEMP\dsh-screenshot-v2" | Select-Object Name,Length,LastWriteTime`（只应有上面两个文件）。
+- 截图：`out/evidence/manual/R17-leftclick-exit.png` ⚠ 未产出（待补人工截图）。
+- 命令：`Get-Process | Where-Object MainWindowTitle -like '*DSH*' | Select-Object Id,MainWindowTitle`（退出前后各一次）。
 
 ## R18 单一编辑器
 
 **操作**
 1. 普通截图进入编辑器，记录工具栏顺序、窗口标题、快捷键。
-2. 长截图完成后进入编辑器，逐项对比。
+2. 连续再做两次普通截图，逐项对比（v2.1 起长截图已取消，不再有第二条对比路径）。
 
 **预期**
 - 同一套工具栏与同一窗口类（标题/图标一致），工具状态、快捷键、颜色粗细默认值一致。
 
 **证据**
-- 截图：`out/evidence/manual/R18-editor-normal.png` 与 `R18-editor-longshot.png` ⚠ 未产出（待补人工截图）。
+- 截图：`out/evidence/manual/R18-editor-normal.png` ⚠ 未产出（待补人工截图）。
 
 ## R19 图标工具栏与本地化提示
 
@@ -595,25 +606,23 @@ Get-ChildItem -Recurse -File -Filter 'R*.png' | Measure-Object   # Count = 0
 1. 在干净检出上执行 `pwsh -NoProfile -File tools/e2e.ps1 -DryRun`（应 exit 0）。
 2. 执行 `pwsh -NoProfile -File tools/e2e.ps1`（完整链路）。
 3. 检查 `out/evidence/report.json`、`out/evidence/SUMMARY.md` 与各步骤日志。
-4. 若第 8 步只报告 sha256 漂移的 WARN：记下 WARN 里的当前 sha 与基线 sha，确认这批字节已复审，
+4. 若第 6 步只报告 sha256 漂移的 WARN：记下 WARN 里的当前 sha 与基线 sha，确认这批字节已复审，
    再执行 `pwsh -NoProfile -File tools/e2e.ps1 -AcceptClientSha`（或
    `node tools/client-contract.mjs --update-baseline --reason "..."`）把基线更新到当前字节；重跑
    链路后 WARN 应消失，`tools/fixtures/client-baseline.json` 里出现新的 sha256、reason 与 updatedAt。
 
 **预期**
-- 链路依次执行 preflight/wiring → build -Tests → EngineTests → `SnipTool.exe --selftest` → `SnipTool.exe --longshot-probe` → `SnipTool.exe --longshot-probe <dir> wheelOnly=false`（负控）→ `SnipTool.exe --crash-probe` → 真实槽位契约门（`tools/client-contract.mjs`，第 8 步）→ 插件冒烟 → `install.ps1 -WhatIf` → `npm pack`（校验 tgz 文件白名单）→ 文档检查，共 12 步，并写出 report.json 与 SUMMARY.md。
-- 全部通过 exit 0（期望 12/12 步 PASS）；任一 fail exit 非 0；尚未实现的模块记 `pending` 且不中断（`-Strict` 下 pending 视为失败）。
-- **第 8 步（client-contract）的判定：契约是硬门，sha256 不是。** 该步用真实 Cordis 语义跑 15 项检查——未声明 `exports.inject` 就读 `ctx.slots` 必须抛 `cannot get property "slots" without inject`；`slots.inject(key, callback)` 的回调必须是函数、返回值即 disposer（否则 `callback is not a function`）；single slot 同优先级重复注册抛 `single slot "conversation.input.activity" already has a registration at priority 0`；multi slot 可共存；`slots.register({name}, Component)` 的 `name` 必须等于注入键。当前 `lib/client.js` 必须 15/15 通过，且打包的 2.0.0 旧 bundle 必须被拒并给出 missing-inject / non-function-callback / single-slot-conflict 三类错误；任一条不满足即 fail（`-AcceptClientSha` 也无法把它变绿）。
-- **sha256 漂移只 WARN**：`tools/fixtures/client-baseline.json` 记录的是「这批字节被复审过」。当前 `lib/client.js` 与它不同时，第 8 步仍 PASS、链路仍 exit 0，该步 `warnings[]` 会写明当前 sha、基线 sha、基线文件名与接受命令。基线只能由 `-AcceptClientSha` 或 `node tools/client-contract.mjs --update-baseline --reason "..."` 显式写入；后者在契约检查失败时拒绝写（exit 1）、缺 `--reason` 时 exit 2，普通运行绝不改写基线。（历史：sha 曾作为硬失败，t28 拆分 client 的合法改动静被读成回归，因此降级为 WARN。）
+- 链路依次执行 preflight/wiring → build -Tests → EngineTests → `SnipTool.exe --selftest` → `SnipTool.exe --crash-probe` → 真实槽位契约门（`tools/client-contract.mjs`，第 6 步）→ 插件冒烟 → `install.ps1 -WhatIf` → `npm pack`（校验 tgz 文件白名单）→ 文档检查，共 10 步，并写出 report.json 与 SUMMARY.md。
+- 全部通过 exit 0（期望 10/10 步 PASS）；任一 fail exit 非 0；尚未实现的模块记 `pending` 且不中断（`-Strict` 下 pending 视为失败）。
+- **第 6 步（client-contract）的判定：契约是硬门，sha256 不是。** 该步用真实 Cordis 语义跑 15 项检查——未声明 `exports.inject` 就读 `ctx.slots` 必须抛 `cannot get property "slots" without inject`；`slots.inject(key, callback)` 的回调必须是函数、返回值即 disposer（否则 `callback is not a function`）；single slot 同优先级重复注册抛 `single slot "conversation.input.activity" already has a registration at priority 0`；multi slot 可共存；`slots.register({name}, Component)` 的 `name` 必须等于注入键。当前 `lib/client.js` 必须 15/15 通过，且打包的 2.0.0 旧 bundle 必须被拒并给出 missing-inject / non-function-callback / single-slot-conflict 三类错误；任一条不满足即 fail（`-AcceptClientSha` 也无法把它变绿）。
+- **sha256 漂移只 WARN**：`tools/fixtures/client-baseline.json` 记录的是「这批字节被复审过」。当前 `lib/client.js` 与它不同时，第 6 步仍 PASS、链路仍 exit 0，该步 `warnings[]` 会写明当前 sha、基线 sha、基线文件名与接受命令。基线只能由 `-AcceptClientSha` 或 `node tools/client-contract.mjs --update-baseline --reason "..."` 显式写入；后者在契约检查失败时拒绝写（exit 1）、缺 `--reason` 时 exit 2，普通运行绝不改写基线。（历史：sha 曾作为硬失败，t28 拆分 client 的合法改动静被读成回归，因此降级为 WARN。）
 - **判定入口只有 `out/evidence/report.json`**：看 `ok`/`status`/`counts.fail`，不要去 grep 控制台文本——负控子进程的 FAIL 字样可能异步漏进父进程控制台，那是预期输出。
-- selftest 步不只看 PNG：必须解析同目录 `summary.json`，逐条 `status` 都是 `passed`，且 **13 条 criteria 全部在场**：A1–A8、`A9/R26`、`N1`、`N2`、`N2b`、`N3`。少一条即 fail（套件缩水不能被读成「全部通过」）；`attested` 仅在非核心项上可接受，核心 A1–A6 必须是探针真实断言。
-- longshot-probe 步读 `longshot_probe.json`，除 `ok==true`、`frames>=2`、`composedHeight > selHeight` 外还要求：`fallbackUsed` 字段**存在且不为 true**（缺字段即 fail——reviewer 曾证明探针只靠 `ScrollBy` 兜底也能 PASS，pixelHash 逐字节相同）、`realPath==true`、`n1RegressionOk==true`、`hookUnhooked==true`、`exportedHeight >= composedHeight`。开关尚未实现时显式记 `skipped` 并写明「不声称通过」，因为该项曾出现过只裁回一屏的致命缺陷。
-- longshot-negative 步是**负控**：以 `wheelOnly=false` 关掉滚轮转发后，探针必须**非零退出**且 JSON 为 `ok=false`。它退出 0、或退出非零却写 `ok=true`，都判 fail——说明探针分不清「真滚动捕获」和「兜底」。
-- `--selftest` 至少产出 8 张可人工判读的 PNG（窗口/任务栏/屏幕高亮、拖拽选区、顶栏、长截图预览、编辑器工具栏、马赛克前后），见 `out/evidence/selftest/`。
+- selftest 步不只看 PNG：必须解析同目录 `summary.json`，逐条 `status` 都是 `passed`，且 **5 条 criteria 全部在场**：`A1`、`A2`、`A6`、`A7`、`A9/R26`。少一条即 fail（套件缩水不能被读成「全部通过」）；`attested` 不可接受，这 5 条必须是探针真实断言（v2.1 删掉了长截图与顶栏相关项，criteria 从 13 条降到 5 条）。
+- `--selftest` 至少产出 6 张可人工判读的 PNG（窗口/任务栏/屏幕高亮、拖拽选区、编辑器工具栏、马赛克前后），见 `out/evidence/selftest/`。
 - `tools/plugin-smoke.mjs` 是插件冒烟的唯一实现（含 cli-sync：`lib/index.js` 传给原生程序的每个开关都必须被 `Program.Main` 解析）；`test/plugin/smoke.mjs` 只是按 `import.meta.url` 求根后转发它。
 
 **证据**
-- `out/evidence/report.json`（schema `dsh-screenshot-evidence/v2`，含每步 status/exitCode/artifacts/warnings）、`out/evidence/SUMMARY.md`、`out/evidence/logs/*.log`、`out/evidence/selftest/*.png` 与 `out/evidence/selftest/summary.json`、`out/evidence/longshot/longshot_probe.json`（正控）、`out/evidence/longshot-negative/longshot_probe.json`（负控）、`out/evidence/crashprobe/crash_probe.json`、`out/evidence/ev-contract/client-contract.json`（第 8 步原始判定，含 `baseline`、`drift`、`checks`、`negative`）、`dsh-screenshot-<version>.tgz`。
+- `out/evidence/report.json`（schema `dsh-screenshot-evidence/v2`，含每步 status/exitCode/artifacts/warnings）、`out/evidence/SUMMARY.md`、`out/evidence/logs/*.log`、`out/evidence/selftest/*.png` 与 `out/evidence/selftest/summary.json`、`out/evidence/crashprobe/crash_probe.json`、`out/evidence/ev-contract/client-contract.json`（第 6 步原始判定，含 `baseline`、`drift`、`checks`、`negative`）、`dsh-screenshot-<version>.tgz`。
 
 ## 记录模板
 
@@ -628,7 +637,7 @@ Get-ChildItem -Recurse -File -Filter 'R*.png' | Measure-Object   # Count = 0
 
 ## 常见坑（troubleshooting）
 
-- **`error CS0016` / `cannot replace bin\SnipTool.exe`**：刚退出的 `SnipTool.exe`（暖进程、`--selftest`、`--longshot-probe`）或杀软扫描会短暂占用映像文件。`build.ps1` 自 t19 起先编译到临时文件，再带重试（10 × 400ms）替换目标；若仍报 `cannot replace ... locked by a running process`，说明确实有实例在跑：`taskkill /IM SnipTool.exe /F` 后重跑即可，不要怀疑源码。
+- **`error CS0016` / `cannot replace bin\SnipTool.exe`**：刚退出的 `SnipTool.exe`（暖进程、`--selftest`、`--crash-probe`）或杀软扫描会短暂占用映像文件。`build.ps1` 自 t19 起先编译到临时文件，再带重试（10 × 400ms）替换目标；若仍报 `cannot replace ... locked by a running process`，说明确实有实例在跑：`taskkill /IM SnipTool.exe /F` 后重跑即可，不要怀疑源码。
 - **同一条 e2e 命令手跑绿、脚本里跑红**：先看失败步是 `build` 还是 `engine`。前者见上一条（文件被占用），后者是 B8 探针竞态（已在 t19 用 `[STAThread]` + 自枚举自检 + 有界轮询修掉）。报告里 `[FAIL]` 的 `detail` 字段会给出 `direct` 枚举数、轮询轮数、helper 是否退出，不要只看 exit code。
-- **严格 JSON 解析器报错**：t19 起所有机器可读 JSON（`out/engine.json`、`summary.json`、`longshot_probe.json`、`crash_probe.json`）统一 UTF-8 **无 BOM**；若你在旧产物上看到 `EF BB BF`，重跑该步骤生成新文件。
-- **不要重启 DSH 来"修"构建**：本仓库的验证链路完全离屏（`--selftest`、`--longshot-probe` 不依赖桌面交互），重启宿主只会让会话丢失，对构建无帮助。
+- **严格 JSON 解析器报错**：t19 起所有机器可读 JSON（`out/engine.json`、`summary.json`、`crash_probe.json`）统一 UTF-8 **无 BOM**；若你在旧产物上看到 `EF BB BF`，重跑该步骤生成新文件。
+- **不要重启 DSH 来"修"构建**：本仓库的验证链路完全离屏（`--selftest`、`--crash-probe` 不依赖桌面交互），重启宿主只会让会话丢失，对构建无帮助。

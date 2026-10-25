@@ -10,9 +10,7 @@
     2. build         pwsh -File build.ps1 -Tests              -> bin/SnipTool.exe, bin/EngineTests.exe
     3. engine        bin/EngineTests.exe --json ... --png ... -> engine.json + PNG evidence
     4. selftest      bin/SnipTool.exe --selftest <dir>        -> overlay/editor PNG evidence
-    5. longshot-probe bin/SnipTool.exe --longshot-probe <dir> -> real scroll capture + stitch
-    6. longshot-negative same probe with wheelOnly=false       -> MUST exit non-zero (negative control)
-    7. crash-probe   bin/SnipTool.exe --crash-probe <dir>     -> crash_probe.json (log grows, ok=true)
+            7. crash-probe   bin/SnipTool.exe --crash-probe <dir>     -> crash_probe.json (log grows, ok=true)
     8. contract      node tools/client-contract.mjs --json ... -> HARD GATE: the real Cordis slots
                      contract (declared inject, effect-style callbacks, single-slot rules). The
                      current lib/client.js must activate cleanly and the shipped 2.0.0 bundle
@@ -84,9 +82,6 @@
 .PARAMETER CrashProbeTimeoutSec
   Hard kill for "--crash-probe" (it must never hang the chain).
 
-.PARAMETER LongShotTimeoutSec
-  Hard kill for "--longshot-probe" (a real long-shot stitch that hangs must not hang the chain).
-
 .PARAMETER PackageTimeoutSec
   Hard kill for "npm pack" (a wedged npm must not hang the evidence chain).
 
@@ -118,7 +113,6 @@ param(
     [int]$EngineTimeoutSec = 180,
     [int]$SelftestTimeoutSec = 240,
     [int]$CrashProbeTimeoutSec = 120,
-    [int]$LongShotTimeoutSec = 120,
     [int]$PluginTimeoutSec = 180,
     [int]$InstallTimeoutSec = 120,
     [int]$PackageTimeoutSec = 180,
@@ -647,11 +641,11 @@ function Invoke-SelftestStep {
         return Add-Step -Id 'selftest' -Title $title -Status 'fail' -Command $run.commandLine -Detail ("summary.json reports non-passed criteria: " + ($notPassed -join ', ')) -ExitCode 0 -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
     }
     $verdictIds = @($criteria | ForEach-Object { [string]$_.criterion })
-    # t22 final: the suite carries 13 criteria (A1..A8, A9/R26 and the repair legs N1/N2/N2b/N3).
+    # v2.1: long screenshot is gone, so the suite carries 5 criteria (A1, A2, A6, A7, A9/R26).
     # Every one must be present -- a shrunken suite must never read as "all criteria passed".
-    $requiredVerdicts = @('A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9/R26', 'N1', 'N2', 'N2b', 'N3')
+    $requiredVerdicts = @('A1', 'A2', 'A6', 'A7', 'A9/R26')
     # Non-core verdicts may be attested; the visual/behavioural core must be asserted by a probe (N-5).
-    $coreVerdicts = @('A1', 'A2', 'A3', 'A4', 'A5', 'A6')
+    $coreVerdicts = @('A1', 'A2', 'A6')
     $missingVerdicts = @($requiredVerdicts | Where-Object { $verdictIds -notcontains $_ })
     if ($missingVerdicts.Count -gt 0) {
         return Add-Step -Id 'selftest' -Title $title -Status 'fail' -Command $run.commandLine -Detail ("summary.json has no verdict for " + ($missingVerdicts -join ', ') + '; present: ' + ($verdictIds -join ', ')) -ExitCode 0 -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
@@ -666,175 +660,10 @@ function Invoke-SelftestStep {
     }
     $warnings = @()
     $names = (($pngs | ForEach-Object { $_.Name.ToLowerInvariant() }) -join ' ')
-    if ($names -notmatch 'long|preview|scroll') { $warnings += 'no PNG name looks like the long-shot preview (preview coverage is not machine-verifiable, check by eye)' }
     if ($names -notmatch 'mosaic|pixel') { $warnings += 'no PNG name looks like the mosaic before/after (check by eye)' }
     return Add-Step -Id 'selftest' -Title $title -Status 'pass' -Command $run.commandLine -Detail ($summary + '; ' + $verdictText) -ExitCode 0 -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Warnings $warnings -Log $log
 }
 
-# ---------------------------------------------------------------------------------
-# step 4b: long-shot stitch probe (SnipTool.exe --longshot-probe)
-# ---------------------------------------------------------------------------------
-# F-1 was a blocker that the mock-only selftest could not catch: the long screenshot was cropped
-# back to one screen. The probe drives the real scroll-capture + stitch path headlessly and writes
-# longshot_probe.json, so this step can assert composedHeight > selectionHeight instead of trusting
-# a picture. When the switch does not exist yet the step is skipped and says so — never "passing".
-function Invoke-LongShotProbeStep {
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $title = 'bin/SnipTool.exe --longshot-probe (real scroll capture + stitch, headless)'
-    $exe = Join-Path $script:Root 'bin/SnipTool.exe'
-    if ($SkipNative) {
-        return Add-Step -Id 'longshot-probe' -Title $title -Status 'skipped' -Detail 'skipped by -SkipNative'
-    }
-    if (-not (Test-BuildReady $exe)) {
-        $build = $script:Steps | Where-Object { $_.id -eq 'build' } | Select-Object -First 1
-        $why = if ($build -and $build.status -eq 'fail') { 'build failed, so the long-shot probe could not run' } else { 'bin/SnipTool.exe is missing (run without -SkipBuild)' }
-        return Add-Step -Id 'longshot-probe' -Title $title -Status 'skipped' -Detail $why
-    }
-    $probe = Test-NativeSwitchImplemented '--longshot-probe'
-    if (-not $probe.implemented) {
-        return Add-Step -Id 'longshot-probe' -Title $title -Status 'skipped' -Detail 'src/ has no non-comment "--longshot-probe" switch yet, so the stitched long screenshot cannot be verified headlessly; it is explicitly NOT claimed as passing (see F-1)'
-    }
-    $outDir = Join-Path $script:OutRoot 'longshot'
-    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-    Get-ChildItem -Path $outDir -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-    $run = Invoke-Process -FilePath $exe -ArgumentList @('--longshot-probe', $outDir) -WorkingDirectory $script:Root -TimeoutSec $LongShotTimeoutSec
-    $log = Write-CommandLog -Id 'longshot-probe' -Run $run -Title 'SnipTool --longshot-probe'
-    $artifacts = @((Get-RelPath $outDir))
-    $jsonPath = Join-Path $outDir 'longshot_probe.json'
-    if ($run.timedOut) {
-        return Add-Step -Id 'longshot-probe' -Title $title -Status 'fail' -Command $run.commandLine -Detail ("probe did not exit within {0}s and was killed" -f $LongShotTimeoutSec) -ExitCode $run.exitCode -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
-    }
-    if ($run.exitCode -ne 0) {
-        return Add-Step -Id 'longshot-probe' -Title $title -Status 'fail' -Command $run.commandLine -Detail ("exit {0}: {1}" -f $run.exitCode, (Get-Tail ($run.stdout + $script:NL + $run.stderr) 6)) -ExitCode $run.exitCode -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
-    }
-    if (-not (Test-Path -LiteralPath $jsonPath)) {
-        return Add-Step -Id 'longshot-probe' -Title $title -Status 'fail' -Command $run.commandLine -Detail ('exit 0 but no longshot_probe.json was written to ' + (Get-RelPath $outDir)) -ExitCode 0 -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
-    }
-    $doc = $null
-    try { $doc = Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json } catch { $doc = $null }
-    if ($null -eq $doc) {
-        return Add-Step -Id 'longshot-probe' -Title $title -Status 'fail' -Command $run.commandLine -Detail 'longshot_probe.json is not valid JSON' -ExitCode 0 -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
-    }
-    $problems = @()
-    if ($doc.ok -ne $true) { $problems += ('ok=' + [string]$doc.ok) }
-    # captain (t20 addendum) + t15 N-2: reviewer proved the probe could pass entirely through the
-    # helperForm.ScrollBy(60) fallback, so a PASS says nothing about the real wheel-forwarding path.
-    # The probe must now state fallbackUsed, and a true value is a hard FAIL, not a warning.
-    $fallbackSeen = $null
-    $fallbackName = ''
-    foreach ($name in @('fallbackUsed', 'usedScrollFallback', 'scrollFallbackUsed')) {
-        if ($null -ne $doc.$name) { $fallbackSeen = $doc.$name; $fallbackName = $name; break }
-    }
-    $fallbackText = 'missing'
-    if ($null -eq $fallbackSeen) {
-        $problems += 'longshot_probe.json has no fallbackUsed field (contract change since t22: the probe must declare whether it reached the scroll offset through the wheel-forwarding path or through the ScrollBy fallback)'
-    } else {
-        $fallbackText = [string]$fallbackSeen
-        if (($fallbackSeen -eq $true) -or ([string]$fallbackSeen -match '^(?i:true|1|yes)$')) {
-            $problems += ('the probe used the scroll fallback instead of wheel forwarding (' + $fallbackName + '=' + [string]$fallbackSeen + '), which does not prove the wheel path')
-        }
-    }
-    $frames = $null
-    foreach ($name in @('frames', 'frameCount')) { if ($null -ne $doc.$name) { $frames = [int]$doc.$name; break } }
-    if ($null -eq $frames) { $problems += 'no frames/frameCount field' }
-    elseif ($frames -lt 2) { $problems += ('frames=' + $frames + ' (a long screenshot needs at least 2 captured frames)') }
-    $composed = $null
-    $selected = $null
-    foreach ($name in @('composedHeight', 'stitchedHeight', 'height')) { if ($null -ne $doc.$name) { $composed = [int]$doc.$name; break } }
-    foreach ($name in @('selHeight', 'selectionHeight', 'viewportHeight')) { if ($null -ne $doc.$name) { $selected = [int]$doc.$name; break } }
-    if (($null -eq $composed) -or ($null -eq $selected)) {
-        $problems += 'no composed/selection height fields (probe schema not recognised)'
-    } elseif ($composed -le $selected) {
-        $problems += ('composed height {0} is not taller than the selection height {1} — the stitched image was cropped back to one screen (F-1)' -f $composed, $selected)
-    }
-    # t22 final probe schema. These four fields are what separates "a real long-shot capture" from
-    # "a picture of one window": they must exist and hold the expected value, otherwise the contract
-    # changed and the step has to fail (never skip, never warn).
-    $realPathText = if ($null -ne $doc.realPath) { [string]$doc.realPath } else { 'missing' }
-    $n1Text = if ($null -ne $doc.n1RegressionOk) { [string]$doc.n1RegressionOk } else { 'missing' }
-    $hookText = if ($null -ne $doc.hookUnhooked) { [string]$doc.hookUnhooked } else { 'missing' }
-    foreach ($flag in @(
-            @{ Name = 'realPath'; Why = 'the probe did not drive the real SnipForm capture path' },
-            @{ Name = 'n1RegressionOk'; Why = 'the N-1 regression leg (the stitched image must survive an editor drag) failed' },
-            @{ Name = 'hookUnhooked'; Why = 'the keyboard hook was not uninstalled after the long-shot ended (N-3)' })) {
-        $fieldName = [string]$flag.Name
-        if ($null -eq $doc.$fieldName) {
-            $problems += ('longshot_probe.json has no ' + $fieldName + ' field (contract change since t22)')
-        } elseif ($doc.$fieldName -ne $true) {
-            $problems += ($fieldName + '=' + [string]$doc.$fieldName + ' (' + [string]$flag.Why + ')')
-        }
-    }
-    $exported = $null
-    foreach ($name in @('exportedHeight', 'outputHeight', 'pngHeight')) { if ($null -ne $doc.$name) { $exported = [int]$doc.$name; break } }
-    $exportedText = if ($null -ne $exported) { [string]$exported } else { 'missing' }
-    if ($null -eq $exported) {
-        $problems += 'longshot_probe.json has no exportedHeight field (contract change since t22)'
-    } elseif (($null -ne $composed) -and ($exported -lt $composed)) {
-        $problems += ('exportedHeight={0} is shorter than composedHeight={1}, so the exported PNG lost rows that were actually captured (N-1)' -f $exported, $composed)
-    }
-    $detail = ("ok={0}, frames={1}, composedHeight={2}, selectionHeight={3}, fallbackUsed={4}, realPath={5}, n1RegressionOk={6}, exportedHeight={7}, hookUnhooked={8}" -f [string]$doc.ok, [string]$frames, [string]$composed, [string]$selected, $fallbackText, $realPathText, $n1Text, $exportedText, $hookText)
-    if ($problems.Count -gt 0) {
-        return Add-Step -Id 'longshot-probe' -Title $title -Status 'fail' -Command $run.commandLine -Detail (($problems -join ' | ') + '; ' + $detail) -ExitCode 0 -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
-    }
-    return Add-Step -Id 'longshot-probe' -Title $title -Status 'pass' -Command $run.commandLine -Detail $detail -ExitCode 0 -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
-}
-
-# ---------------------------------------------------------------------------------
-# step 4c: long-shot probe negative control (wheel forwarding disabled -> must FAIL)
-# ---------------------------------------------------------------------------------
-# t15 N-2: the reviewer proved the probe could reach a stitched PNG purely through the ScrollBy
-# fallback, so a green probe proved nothing about wheel forwarding. The verifier added
-# "--longshot-probe <dir> wheelOnly=false", which disables wheel forwarding; it must exit non-zero
-# and write ok=false. A green negative control would mean the probe cannot tell the two paths apart.
-function Invoke-LongShotNegativeStep {
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $title = 'bin/SnipTool.exe --longshot-probe wheelOnly=false (negative control must fail)'
-    $exe = Join-Path $script:Root 'bin/SnipTool.exe'
-    if ($SkipNative) {
-        return Add-Step -Id 'longshot-negative' -Title $title -Status 'skipped' -Detail 'skipped by -SkipNative'
-    }
-    if (-not (Test-BuildReady $exe)) {
-        $build = $script:Steps | Where-Object { $_.id -eq 'build' } | Select-Object -First 1
-        $why = if ($build -and $build.status -eq 'fail') { 'build failed, so the negative control could not run' } else { 'bin/SnipTool.exe is missing (run without -SkipBuild)' }
-        return Add-Step -Id 'longshot-negative' -Title $title -Status 'skipped' -Detail $why
-    }
-    $probe = Test-NativeSwitchImplemented '--longshot-probe'
-    if (-not $probe.implemented) {
-        return Add-Step -Id 'longshot-negative' -Title $title -Status 'skipped' -Detail 'src/ has no non-comment "--longshot-probe" switch yet, so the negative control cannot run; the probe is explicitly NOT claimed as passing (see N-2)'
-    }
-    $outDir = Join-Path $script:OutRoot 'longshot-negative'
-    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-    Get-ChildItem -Path $outDir -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-    $run = Invoke-Process -FilePath $exe -ArgumentList @('--longshot-probe', $outDir, 'wheelOnly=false') -WorkingDirectory $script:Root -TimeoutSec $LongShotTimeoutSec
-    $log = Write-CommandLog -Id 'longshot-negative' -Run $run -Title 'SnipTool --longshot-probe wheelOnly=false (negative control)'
-    $artifacts = @((Get-RelPath $outDir))
-    if ($run.timedOut) {
-        return Add-Step -Id 'longshot-negative' -Title $title -Status 'fail' -Command $run.commandLine -Detail ("the negative control did not exit within {0}s and was killed" -f $LongShotTimeoutSec) -ExitCode $run.exitCode -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
-    }
-    $jsonPath = Join-Path $outDir 'longshot_probe.json'
-    $negText = 'no longshot_probe.json was written'
-    $negOk = $null
-    if (Test-Path -LiteralPath $jsonPath) {
-        $neg = $null
-        try { $neg = Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json } catch { $neg = $null }
-        if ($null -ne $neg) {
-            $negOk = $neg.ok
-            $negFrames = if ($null -ne $neg.frames) { [string]$neg.frames } else { 'missing' }
-            $negText = ('ok={0}, frames={1}' -f [string]$neg.ok, $negFrames)
-        } else {
-            $negText = 'longshot_probe.json is not valid JSON'
-        }
-    }
-    if ($run.exitCode -eq 0) {
-        return Add-Step -Id 'longshot-negative' -Title $title -Status 'fail' -Command $run.commandLine -Detail ('the negative control exited 0, so the probe cannot tell a real long-shot capture from a blocked wheel path (N-2); ' + $negText) -ExitCode $run.exitCode -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
-    }
-    if ($negOk -eq $true) {
-        return Add-Step -Id 'longshot-negative' -Title $title -Status 'fail' -Command $run.commandLine -Detail ('the negative control exited {0} but still wrote ok=true, which contradicts itself; {1}' -f $run.exitCode, $negText) -ExitCode $run.exitCode -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
-    }
-    $warnings = @()
-    if ($run.exitCode -ne 1) { $warnings += ('the negative control exited ' + $run.exitCode + ' instead of 1; only "non-zero exit" is asserted') }
-    return Add-Step -Id 'longshot-negative' -Title $title -Status 'pass' -Command $run.commandLine -Detail ('expected non-zero exit received, ' + $negText) -ExitCode $run.exitCode -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Warnings $warnings -Log $log
-}
 
 # ---------------------------------------------------------------------------------
 # step 5: crash probe (SnipTool.exe --crash-probe)
@@ -1400,16 +1229,6 @@ function Get-PlannedSteps {
             prereqs = @('bin/SnipTool.exe', 'src')
         },
         [pscustomobject][ordered]@{
-            id = 'longshot-probe'; title = 'bin/SnipTool.exe --longshot-probe out/evidence/longshot'
-            command = 'bin/SnipTool.exe --longshot-probe out/evidence/longshot'
-            prereqs = @('bin/SnipTool.exe', 'src')
-        },
-        [pscustomobject][ordered]@{
-            id = 'longshot-negative'; title = 'bin/SnipTool.exe --longshot-probe out/evidence/longshot-negative wheelOnly=false (must exit non-zero)'
-            command = 'bin/SnipTool.exe --longshot-probe out/evidence/longshot-negative wheelOnly=false'
-            prereqs = @('bin/SnipTool.exe', 'src')
-        },
-        [pscustomobject][ordered]@{
             id = 'crash-probe'; title = 'bin/SnipTool.exe --crash-probe out/evidence/crashprobe'
             command = 'bin/SnipTool.exe --crash-probe out/evidence/crashprobe'
             prereqs = @('bin/SnipTool.exe', 'src')
@@ -1523,8 +1342,6 @@ try {
         Invoke-BuildStep
         Invoke-EngineStep
         Invoke-SelftestStep
-        Invoke-LongShotProbeStep
-        Invoke-LongShotNegativeStep
         Invoke-CrashProbeStep
         Invoke-ClientContractStep
         Invoke-PluginStep

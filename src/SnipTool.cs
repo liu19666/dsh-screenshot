@@ -32,7 +32,7 @@ static class Program
     // --dark / --light override it so the host (or a test) can force either one.
     public static bool DarkMode;
 
-    // v2.1: automated evidence modes (--selftest/--auto/--detect/--longshot-probe) must
+    // v2.1: automated evidence modes (--selftest/--auto/--detect) must
     // never block on a modal dialog. Set from the command line before any UI exists.
     public static bool SuppressDialogs;
 

@@ -10,7 +10,7 @@ Native screenshot tool v2 for DeepSeek Harness on Windows: automatic window/scre
 English | [中文](README.md)
 
 ![Overview](docs/screenshots/overview-zh.png)
-> *Note: Diagram shows v1 interface. v2 adds the bottom editor with Mosaic and Save/Cancel/Confirm.*
+> *Note: The screenshot shows the v2.1 interface — a hovered candidate region (thicker blue frame + size badge at its top-left), the area outside dimmed, and the icon-only toolbar.*
 
 ## Features (R1–R30)
 
@@ -29,7 +29,7 @@ English | [中文](README.md)
 | 100% Local & Zero Telemetry | Native .NET Framework 4.8 / GDI+ implementation; zero network requests, zero telemetry (R26, R29) |
 
 ![Toolbar](docs/screenshots/toolbar.png)
-> *Note: Diagram shows v1 toolbar. v2.1 removed the top toggle bar and the long-screenshot mode; the unified editor adds Mosaic in the middle, and Save/Cancel/Confirm on the right.*
+> *Note: v2.1 toolbar: rectangle, ellipse, line, arrow, pen, text, mosaic | save, cancel (red cross), confirm (green check). Undo is `Ctrl+Z`.*
 
 ## Installation
 

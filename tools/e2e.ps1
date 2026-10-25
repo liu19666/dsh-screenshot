@@ -487,7 +487,7 @@ function Test-BuildReady {
 # ---------------------------------------------------------------------------------
 function Invoke-EngineStep {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $title = 'bin/EngineTests.exe (target detection + long-shot math)'
+    $title = 'bin/EngineTests.exe (target detection + hit-test cache)'
     $exe = Join-Path $script:Root 'bin/EngineTests.exe'
     if ($SkipNative) {
         return Add-Step -Id 'engine' -Title $title -Status 'skipped' -Detail 'skipped by -SkipNative'

@@ -1,4 +1,4 @@
-// Headless test entry point for the detection + long-shot engines (owner: engine-dev).
+// Headless test entry point for the detection engine (owner: engine-dev).
 //   bin/EngineTests.exe --json out.json --png out-dir
 // Writes machine readable results and exits 0 only when every check passed.
 using System;

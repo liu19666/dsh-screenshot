@@ -17,7 +17,7 @@ $refs = @('/r:System.dll', '/r:System.Drawing.dll', '/r:System.Windows.Forms.dll
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # Compiles to a scratch file and then swaps it into place with retries.
-# Rationale: a just-exited SnipTool.exe (warm server, --selftest, --longshot-probe) or an
+# Rationale: a just-exited SnipTool.exe (warm server, --selftest) or an
 # antivirus scan can keep the previous image locked for a moment; csc then fails with
 # "error CS0016: could not write to output file ... being used by another process".
 # That is a timing artefact, not a build error, so retry the swap instead of failing.

@@ -28,7 +28,7 @@ pwsh -NoProfile -File build.ps1
 - 编译器：`C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe`（.NET Framework 4.8），
   语言级别为 C# 5（不用字符串插值、`?.`、`nameof`、表达式体成员、`out var`）。
 - 产物：`bin/SnipTool.exe`（WinExe，覆盖层 + 编辑器 + 热进程服务）、
-  `bin/EngineTests.exe`（目标识别与长截图算法的无界面测试）。
+  `bin/EngineTests.exe`（目标识别与命中缓存的界面无关测试；v2.1 起不再含长截图算法）。
 - 构建后自检：`pwsh -NoProfile -File tools/e2e.ps1 -SkipNative` 或完整 `tools/e2e.ps1`。
 - 构建失败排查：`out/evidence/logs/build.log` 里有完整 stdout/stderr（`tools/e2e.ps1` 生成）。
 
@@ -127,8 +127,6 @@ pwsh -NoProfile -File install.ps1 -Rollback -WhatIf
 - 安装需要本机 pnpm；没有 pnpm 时 `install.ps1` 会在第 2 步前明确报错退出，不会半途修改文件。
 - 安装脚本按 profile 的 `package.json`/`cordis.patch.yml` 两个文件备份与回滚；若用户在同一
   时间段内手工改过这两个文件，回滚会覆盖这些手工改动。
-- 长截图只能捕获「在选区内随滚轮滚动」的内容；不随滚轮滚动（虚拟化列表一次性渲染、原生窗口
-  自绘而忽略滚轮）的界面可能拼不出完整长图，需要改用普通截图。
 - 马赛克是对当前画布像素的破坏性编辑，插件不提供「还原原像素」；取消/不保存即可放弃整张编辑。
 - 覆盖层按像素坐标工作：显示器热插拔、运行中修改缩放比例后，需退出覆盖层重新进入才能拿到新布局。
 - 单实例约束由 `SnipTool.exe --serve` 热进程提供；若该进程被外部强行结束，下一次点击会重建，
@@ -168,7 +166,7 @@ pwsh -NoProfile -File install.ps1 -Rollback -WhatIf
 - [ ] build.ps1 -Tests 退出码 0，bin/SnipTool.exe 与 bin/EngineTests.exe 存在
 - [ ] tools/e2e.ps1 退出码 0，out/evidence/report.json 中无 fail 步骤
 - [ ] tools/e2e.ps1 -Strict 退出码 0（无 pending）
-- [ ] tools/e2e.ps1 共 10 步全 PASS（含 selftest 逐项 summary.json 全 passed、longshot-probe：ok=true、frames>=2、composedHeight>selHeight、crash-probe：ok=true、afterBytes > beforeBytes、docs：VERIFY 30/30 + RELEASE 6/6）
+- [ ] tools/e2e.ps1 共 10 步全 PASS（含 selftest 逐项 summary.json 全 passed 且 A1/A2/A6/A7/A9-R26 五条在场、crash-probe：ok=true、afterBytes > beforeBytes、docs：VERIFY 30/30 + RELEASE 6/6；v2.1 起不再有 longshot-probe 步骤）
 - [ ] crash_probe.json 的 marker 出现在 %TEMP%\dsh-snip-error.log 尾部（日志是追加写的）
 - [ ] docs/VERIFY.md 的 R1–R30 已按表格记录结论与证据路径
 - [ ] pnpm pack 产物已自检（tar 列表 + plugin-smoke）

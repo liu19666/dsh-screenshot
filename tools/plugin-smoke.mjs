@@ -14,8 +14,11 @@
 //   3. host-syntax   lib/index.js parses (node --check)
 //   4. client-syntax lib/client.js parses (node --check)
 //   5. host-load     lib/index.js imports and exposes apply()/inject
-//   6. client-load   lib/client.js registers with a stub __ModuleLoader__ and its
-//                    factory runs against a stub React/DOM, returning apply()/inject
+//   6. client-load   lib/client.js registers with a stub __ModuleLoader__, its factory
+//                    runs against a stub React/DOM, and it must ALSO pass
+//                    tools/client-contract.mjs: the real Cordis slots contract (declared
+//                    inject, effect-style inject(key, callback), single-slot rules). The
+//                    stub load alone is exactly what let the broken 2.0.0 bundle ship.
 //   7. cli-sync      every flag lib/index.js passes to SnipTool.exe is parsed by
 //                    Program.Main, and the host no longer depends on "hide"
 //   8. binary        bin/SnipTool.exe exists (informational only)
@@ -34,6 +37,7 @@ import { existsSync, readFileSync, statSync, writeFileSync, mkdirSync } from 'no
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import vm from 'node:vm'
+import { runContract } from './client-contract.mjs'
 
 const args = process.argv.slice(2)
 function argValue(name, fallback = null) {
@@ -367,8 +371,33 @@ function checkClient() {
   if (!hasApply) return addCheck('client-load', 'lib/client.js registers and exposes apply()/inject', 'fail',
     'module has no apply() (keys: ' + Object.keys(api).join(', ') + ')')
   const inject = Array.isArray(api.inject) ? api.inject : []
-  return addCheck('client-load', 'lib/client.js registers and exposes apply()/inject', 'pass',
-    'id=' + id + '; apply=' + (typeof api.apply === 'function') + '; inject=[' + inject.join(', ') + ']', { moduleId: id })
+  // The stub load above only proves the bundle parses and loads. Web boot executes apply()
+  // against the REAL Cordis context, so tools/client-contract.mjs has the final word:
+  // undeclared service reads, descriptor-style slots.inject() and single-slot collisions all
+  // throw there (v2.0.0 lost web boot that way while this stub still reported "pass").
+  let contract = null
+  try {
+    contract = runContract({ clientPath: clientPath })
+  } catch (e) {
+    contract = { ok: false, checks: [], failed: [{ id: 'client-contract-crash', category: 'module-load', error: String((e && e.message) || e) }] }
+  }
+  const contractChecks = (contract && contract.checks) || []
+  const contractFailed = (contract && contract.failed) || []
+  if (!contract || !contract.ok) {
+    const why = contractFailed.length
+      ? contractFailed.map(function (f) { return f.id + ' [' + f.category + '] ' + f.error }).join(' | ')
+      : 'contract gate returned no verdict'
+    return addCheck('client-load', 'lib/client.js passes the real slots contract (not just stub load)', 'fail',
+      'stub load ok (id=' + id + ') but the real slots contract fails, so web boot would abort: ' + why,
+      { moduleId: id, contractReport: 'out/ev-contract/client-contract.json' })
+  }
+  const passedCount = contractChecks.filter(function (c) { return c.status === 'pass' }).length
+  const negative = contract.negative
+  return addCheck('client-load', 'lib/client.js passes the real slots contract (not just stub load)', 'pass',
+    'id=' + id + '; apply=' + (typeof api.apply === 'function') + '; inject=[' + inject.join(', ') + ']' +
+    '; real slots contract: ' + passedCount + '/' + contractChecks.length + ' checks pass' +
+    (negative ? '; negative control rejected the shipped 2.0.0 bundle (' + (negative.observedCategories || []).join(', ') + ')' : ''),
+    { moduleId: id })
 }
 
 // --- 5. host/native contract --------------------------------------------------------

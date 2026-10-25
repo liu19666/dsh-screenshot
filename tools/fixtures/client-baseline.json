@@ -1,0 +1,7 @@
+{
+  "schema": "dsh-screenshot-client-baseline/v1",
+  "sha256": "eb306de64ff3eb074ef414bf79eb5d5103f23bddc5c316a5c5320d228d16975a",
+  "updatedAt": "2026-10-25T20:06:06.567Z",
+  "reason": "t35 探针加固后重打包（t36 最终交付批次）：client.js 探针上报改为 POST JSON body，DOM 搬运 hack 计数仍为 0，契约 15/15 + 旧 bundle 负控三类被拒",
+  "client": "lib/client.js"
+}

@@ -10,11 +10,21 @@
     2. build         pwsh -File build.ps1 -Tests              -> bin/SnipTool.exe, bin/EngineTests.exe
     3. engine        bin/EngineTests.exe --json ... --png ... -> engine.json + PNG evidence
     4. selftest      bin/SnipTool.exe --selftest <dir>        -> overlay/editor PNG evidence
-    5. crash-probe   bin/SnipTool.exe --crash-probe <dir>     -> crash_probe.json (log grows, ok=true)
-    6. plugin        node tools/plugin-smoke.mjs --json ...   -> stub-load check of both plugin halves
-    7. install-plan  pwsh -File install.ps1 -WhatIf           -> plan must print, nothing may change
-    8. package       npm pack                                 -> dsh-screenshot-<version>.tgz + files whitelist
-    9. docs          VERIFY.md covers R1..R30, RELEASE.md covers release sections
+    5. longshot-probe bin/SnipTool.exe --longshot-probe <dir> -> real scroll capture + stitch
+    6. longshot-negative same probe with wheelOnly=false       -> MUST exit non-zero (negative control)
+    7. crash-probe   bin/SnipTool.exe --crash-probe <dir>     -> crash_probe.json (log grows, ok=true)
+    8. contract      node tools/client-contract.mjs --json ... -> HARD GATE: the real Cordis slots
+                     contract (declared inject, effect-style callbacks, single-slot rules). The
+                     current lib/client.js must activate cleanly and the shipped 2.0.0 bundle
+                     must be rejected with all three error categories; out/ev-contract/ holds it.
+                     A sha256 difference against tools/fixtures/client-baseline.json is a WARNING
+                     only (the bundle is source that legal work changes); accept it with
+                     -AcceptClientSha, which records the reviewed bytes in the baseline.
+    9. plugin        node tools/plugin-smoke.mjs --json ...   -> stub load of both plugin halves,
+                     where client-load must ALSO pass step 8 (a stub pass is not evidence)
+   10. install-plan  pwsh -File install.ps1 -WhatIf           -> plan must print, nothing may change
+   11. package       npm pack                                 -> dsh-screenshot-<version>.tgz + files whitelist
+   12. docs          VERIFY.md covers R1..R30, RELEASE.md covers release sections
 
   Output (unless -OutDir says otherwise; a relative -OutDir is resolved against the REPO ROOT):
     out/evidence/report.json    machine readable report (schema dsh-screenshot-evidence/v2)
@@ -47,6 +57,19 @@
 
 .PARAMETER SkipNative
   Skip the native steps (engine, selftest, crash-probe) — plugin/docs only.
+
+.PARAMETER AcceptClientSha
+  Accept a new lib/client.js by recording its sha256 into tools/fixtures/client-baseline.json
+  (via "node tools/client-contract.mjs --update-baseline --reason ...") when the bundle differs
+  from the recorded baseline. Only bytes that already pass every contract check can be accepted;
+  the gate refuses a failing bundle. Without this switch a sha difference is only a WARNING.
+  The baseline moves ONLY through this switch or the gate's own --update-baseline command —
+  a plain run never rewrites it.
+
+.PARAMETER SkipPack
+  Do not re-pack the tarball: reuse the dsh-screenshot-<version>.tgz already sitting in the repo root and
+  record the package step as skipped. tools/accept.ps1 -SkipPack uses this so an acceptance run cannot
+  rewrite the very bytes it is supposed to certify.
 
 .PARAMETER OutDir
   Evidence directory. Defaults to out/evidence (run) or out/evidence/dryrun (-DryRun).
@@ -88,6 +111,8 @@ param(
     [switch]$Strict,
     [switch]$SkipBuild,
     [switch]$SkipNative,
+    [switch]$SkipPack,
+    [switch]$AcceptClientSha,
     [string]$OutDir,
     [int]$BuildTimeoutSec = 300,
     [int]$EngineTimeoutSec = 180,
@@ -863,12 +888,120 @@ function Invoke-CrashProbeStep {
     return Add-Step -Id 'crash-probe' -Title $title -Status 'pass' -Command $run.commandLine -Detail $detail -ExitCode 0 -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
 }
 
+
 # ---------------------------------------------------------------------------------
-# step 6: plugin smoke (tools/plugin-smoke.mjs)
+# step 6: real Cordis slots contract (tools/client-contract.mjs)
+# ---------------------------------------------------------------------------------
+# v2.0.0 shipped a lib/client.js that loaded fine under the stub and then aborted web boot in
+# the real host: it read ctx.slots without declaring exports.inject, passed a descriptor object
+# to slots.inject(key, callback), and registered into the single slot already held by the voice
+# button. The stub load still said "pass"; DSH said "web boot: 1 entry did not activate".
+# This step is the hard gate: the CURRENT bundle must activate against the modelled Cordis
+# context (declared inject, effect-style callbacks whose return value is the disposer, single
+# vs multi slot rules, register options.name) AND the SHIPPED 2.0.0 bundle must be rejected
+# with all three error categories. Without the negative control this gate could be a no-op.
+function Invoke-ClientContractStep {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $title = 'real slots contract: lib/client.js must activate; shipped 2.0.0 must be rejected (sha drift is a warning)'
+    $gate = Join-Path $script:ToolsDir 'client-contract.mjs'
+    $fixture = Join-Path $script:ToolsDir 'fixtures/client-470abc0e.js'
+    $client = Join-Path $script:Root 'lib/client.js'
+    if (-not (Test-Path -LiteralPath $gate)) {
+        return Add-Step -Id 'client-contract' -Title $title -Status 'fail' -Detail ('missing harness file: ' + (Get-RelPath $gate))
+    }
+    if (-not (Test-Path -LiteralPath $fixture)) {
+        return Add-Step -Id 'client-contract' -Title $title -Status 'fail' -Detail ('missing negative fixture: ' + (Get-RelPath $fixture) + ' (extract package/lib/client.js from dist/dsh-screenshot-2.0.0.tgz)')
+    }
+    $nodeCmd = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $nodeCmd) {
+        return Add-Step -Id 'client-contract' -Title $title -Status 'fail' -Detail 'node is not on PATH'
+    }
+    if (-not (Test-Path -LiteralPath $client)) {
+        return Add-Step -Id 'client-contract' -Title $title -Status 'pending' -Detail 'lib/client.js is missing (the client half has not landed yet)'
+    }
+    $outDir = Join-Path $script:OutRoot 'ev-contract'
+    New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+    $jsonPath = Join-Path $outDir 'client-contract.json'
+    Remove-Item -LiteralPath $jsonPath -Force -ErrorAction SilentlyContinue
+    $run = Invoke-Process -FilePath $nodeCmd.Source -ArgumentList @($gate, '--root', $script:Root, '--json', $jsonPath) -WorkingDirectory $script:Root -TimeoutSec $PluginTimeoutSec
+    $log = Write-CommandLog -Id 'client-contract' -Run $run -Title 'client-contract.mjs'
+    $artifacts = @()
+    if (Test-Path -LiteralPath $outDir) { $artifacts += (Get-RelPath $outDir) }
+    if ($run.timedOut) {
+        return Add-Step -Id 'client-contract' -Title $title -Status 'fail' -Command $run.commandLine -Detail ("the contract gate did not exit within {0}s and was killed" -f $PluginTimeoutSec) -ExitCode $run.exitCode -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
+    }
+    $json = $null
+    if (Test-Path -LiteralPath $jsonPath) {
+        try { $json = Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json } catch { $json = $null }
+    }
+    if ($null -eq $json) {
+        return Add-Step -Id 'client-contract' -Title $title -Status 'fail' -Command $run.commandLine -Detail ("the gate wrote no JSON (exit {0}): {1}" -f $run.exitCode, (Get-Tail ($run.stdout + $script:NL + $run.stderr) 8)) -ExitCode $run.exitCode -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
+    }
+    $checks = @($json.checks)
+    $failedChecks = @($json.failed)
+    $negative = $json.negative
+    $observed = @()
+    if ($negative) { $observed = @($negative.observedCategories) }
+    $expectedCats = @('missing-inject', 'non-function-callback', 'single-slot-conflict')
+    $problems = @()
+    if ($run.exitCode -ne 0) { $problems += ('gate exit code ' + $run.exitCode) }
+    if ($json.ok -ne $true) { $problems += ('ok is not true (got: ' + [string]$json.ok + ')') }
+    if ($failedChecks.Count -gt 0) {
+        $problems += ('failed checks: ' + ((@($failedChecks | ForEach-Object { '{0} [{1}] {2}' -f $_.id, $_.category, $_.error })) -join ' | '))
+    }
+    # t31: the sha256 pin used to be a hard failure. lib/client.js is source that legitimate work
+    # changes (t28 split the bundle and the contract still passed), so a pin turned a legal edit into
+    # a red chain and pushed people to edit the gate. The 15 contract checks are the verdict; the
+    # baseline is a review record and only moves through an explicit accept.
+    $warnings = @()
+    $curShaFull = if ($json.client -and $json.client.sha256) { [string]$json.client.sha256 } else { '' }
+    $baselineSha = if ($json.baseline -and $json.baseline.sha256) { [string]$json.baseline.sha256 } elseif ($json.client) { [string]$json.client.expectedSha256 } else { '' }
+    $baselineRel = 'tools/fixtures/client-baseline.json'
+    if ($json.baseline -and $json.baseline.path) {
+        try { $baselineRel = Get-RelPath ([string]$json.baseline.path) } catch { $baselineRel = [string]$json.baseline.path }
+    }
+    $drift = $json.client -and ($json.client.shaMatchesExpected -eq $false)
+    if ($drift) {
+        if ($AcceptClientSha) {
+            $reason = 'accepted through tools/e2e.ps1 -AcceptClientSha at ' + (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss')
+            $upd = Invoke-Process -FilePath $nodeCmd.Source -ArgumentList @($gate, '--root', $script:Root, '--update-baseline', '--reason', $reason) -WorkingDirectory $script:Root -TimeoutSec $PluginTimeoutSec
+            if ($upd.exitCode -eq 0) {
+                $warnings += ('sha drift accepted: baseline updated to ' + $curShaFull + ' in ' + $baselineRel)
+            } else {
+                $problems += ('-AcceptClientSha could not record the baseline (exit ' + $upd.exitCode + '): ' + (Get-Tail ($upd.stdout + $script:NL + $upd.stderr) 4))
+            }
+        } else {
+            $warnings += ('sha drift (warning only, NOT a failure): lib/client.js sha256 ' + $curShaFull + ' differs from the recorded baseline ' + $baselineSha + ' in ' + $baselineRel + '; the ' + $checks.Count + ' contract checks decide pass/fail. Accept reviewed bytes with: pwsh -File tools/e2e.ps1 -AcceptClientSha  (or node tools/client-contract.mjs --update-baseline --reason "<why>")')
+        }
+    }
+    if (-not $negative) {
+        $problems += 'negative control did not run, so a no-op gate would still look green'
+    } else {
+        if ($negative.ok -ne $true) { $problems += ('the shipped 2.0.0 bundle was NOT rejected: ' + [string]$negative.detail) }
+        if ([string]$negative.sha256 -ne [string]$negative.expectedSha256) {
+            $problems += ('the negative fixture is not the shipped 2.0.0 bundle (sha256 ' + [string]$negative.sha256 + ')')
+        }
+        foreach ($cat in $expectedCats) {
+            if ($observed -notcontains $cat) { $problems += ('negative control never observed the ' + $cat + ' category') }
+        }
+    }
+    $curSha = if ($json.client -and $json.client.sha256) { [string]$json.client.sha256 } else { '?' }
+    if ($curSha.Length -gt 12) { $curSha = $curSha.Substring(0, 12) }
+    $passCount = @($checks | Where-Object { $_.status -eq 'pass' }).Count
+    $seen = if ($observed.Count -gt 0) { $observed -join ', ' } else { 'none' }
+    $detail = ("current bundle {0}/{1} checks pass (sha256 {2}); shipped 2.0.0 rejected with: {3}" -f $passCount, $checks.Count, $curSha, $seen)
+    if ($problems.Count -gt 0) {
+        return Add-Step -Id 'client-contract' -Title $title -Status 'fail' -Command $run.commandLine -Detail (($problems -join ' | ') + '; ' + $detail) -ExitCode $run.exitCode -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log
+    }
+    return Add-Step -Id 'client-contract' -Title $title -Status 'pass' -Command $run.commandLine -Detail $detail -ExitCode $run.exitCode -DurationMs ([int]$sw.ElapsedMilliseconds) -Artifacts $artifacts -Log $log -Warnings $warnings
+}
+
+# ---------------------------------------------------------------------------------
+# step 7: plugin smoke (tools/plugin-smoke.mjs)
 # ---------------------------------------------------------------------------------
 function Invoke-PluginStep {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $title = 'plugin smoke: stub-load lib/index.js + lib/client.js'
+    $title = 'plugin smoke: lib/index.js stub-load + lib/client.js must pass the real slots contract'
     $smoke = Join-Path $script:ToolsDir 'plugin-smoke.mjs'
     if (-not (Test-Path -LiteralPath $smoke)) {
         return Add-Step -Id 'plugin' -Title $title -Status 'fail' -Detail ("missing harness file: " + (Get-RelPath $smoke))
@@ -914,7 +1047,7 @@ function Invoke-PluginStep {
 }
 
 # ---------------------------------------------------------------------------------
-# step 7: installer plan (install.ps1 -WhatIf)
+# step 8: installer plan (install.ps1 -WhatIf)
 # ---------------------------------------------------------------------------------
 function Invoke-InstallPlanStep {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -947,11 +1080,14 @@ function Invoke-InstallPlanStep {
 }
 
 # ---------------------------------------------------------------------------------
-# step 8: package (npm pack -> dsh-screenshot-<version>.tgz + files whitelist check)
+# step 9: package (npm pack -> dsh-screenshot-<version>.tgz + files whitelist check)
 # ---------------------------------------------------------------------------------
 function Invoke-PackageStep {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $title = 'npm pack -> dsh-screenshot-<version>.tgz (files whitelist enforced)'
+    if ($SkipPack) {
+        return Add-Step -Id 'package' -Title $title -Status 'skipped' -Detail 'skipped by -SkipPack (the existing dsh-screenshot-<version>.tgz in the repo root is reused, not rebuilt)' -DurationMs ([int]$sw.ElapsedMilliseconds)
+    }
     if (Test-MissingRel 'bin/SnipTool.exe') {
         return Add-Step -Id 'package' -Title $title -Status 'skipped' -Detail 'bin/SnipTool.exe is missing (the build step must pass first)'
     }
@@ -1060,7 +1196,7 @@ function Invoke-PackageStep {
 }
 
 # ---------------------------------------------------------------------------------
-# step 9: docs coverage (VERIFY R1..R30, RELEASE sections)
+# step 10: docs coverage (VERIFY R1..R30, RELEASE sections)
 # ---------------------------------------------------------------------------------
 function Invoke-DocsStep {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -1088,7 +1224,35 @@ function Invoke-DocsStep {
         $missing = @(1..30 | Where-Object { -not $found.ContainsKey($_) })
         if ($missing.Count -gt 0) { $problems += ('VERIFY.md has no section for: ' + (($missing | ForEach-Object { "R$_" }) -join ', ')) }
         if ($weak.Count -gt 0) { $problems += ('VERIFY.md sections incomplete (need 操作/预期/证据): ' + ($weak -join '; ')) }
+        # honesty gate (t34 / M-3b): the doc used to list "present=15 / missing=32" manual screenshots on a
+        # checkout where out/evidence/manual/ did not exist. Every manual reference must now carry its
+        # production status, and the aggregate status table must be present.
+        if ($text -notmatch '人工证据产出状态') {
+            $problems += 'VERIFY.md has no "人工证据产出状态" section (the manual-evidence status table)'
+        }
+        $refRe = [regex]'(?m)^.*out/evidence/manual/[A-Za-z0-9._-]+\.png.*$'
+        $manualRefLines = @($refRe.Matches($text))
+        if ($manualRefLines.Count -eq 0) {
+            $problems += 'VERIFY.md no longer references out/evidence/manual/*.png at all (the evidence column was gutted instead of annotated)'
+        }
+        $unmarked = @($manualRefLines | Where-Object { $_.Value -notmatch '⚠\s*未产出|已有' } | ForEach-Object { $_.Value.Trim() })
+        if ($unmarked.Count -gt 0) {
+            $problems += ('VERIFY.md references manual screenshots without a production marker (append "⚠ 未产出（待补人工截图）" or "已有"): ' + (($unmarked | Select-Object -First 3) -join ' / '))
+        }
+        $r1m = [regex]::Match($text, '(?ms)^## R1\b.*?(?=^## R2\b)')
+        if (-not $r1m.Success) {
+            $problems += 'VERIFY.md R1 section body is missing'
+        } else {
+            $legacy = @(@('DOM 回退', 'insertBefore', 'activity 首选') | Where-Object { $r1m.Value.Contains($_) })
+            if ($legacy.Count -gt 0) {
+                $problems += ('VERIFY.md R1 still describes the removed injection design (' + ($legacy -join ', ') + '); it must document the real slot conversation.input.right and the hidden-with-composer limitation')
+            }
+            if (-not $r1m.Value.Contains('conversation.input.right')) {
+                $problems += 'VERIFY.md R1 must name the real slot conversation.input.right'
+            }
+        }
         $detailParts += ("VERIFY sections: {0}/30" -f $found.Count)
+        $detailParts += ("manual refs: {0} (each carries a production marker)" -f $manualRefLines.Count)
     }
     if (-not (Test-Path -LiteralPath $releasePath)) {
         $problems += 'docs/RELEASE.md is missing'
@@ -1251,9 +1415,14 @@ function Get-PlannedSteps {
             prereqs = @('bin/SnipTool.exe', 'src')
         },
         [pscustomobject][ordered]@{
+            id = 'client-contract'; title = 'node tools/client-contract.mjs --root <repo> --json out/evidence/ev-contract/client-contract.json (real slots contract: current bundle must pass AND the shipped 2.0.0 bundle must be rejected; sha256 drift against tools/fixtures/client-baseline.json is a WARNING, -AcceptClientSha records reviewed bytes)'
+            command = Format-CommandLine -FilePath $nodePath -ArgumentList @('tools/client-contract.mjs', '--root', $script:Root, '--json', 'out/evidence/ev-contract/client-contract.json')
+            prereqs = @('tools/client-contract.mjs', 'tools/fixtures/client-470abc0e.js', 'lib/client.js')
+        },
+        [pscustomobject][ordered]@{
             id = 'plugin'; title = 'node tools/plugin-smoke.mjs --root <repo> --json out/evidence/plugin-smoke.json'
             command = Format-CommandLine -FilePath $nodePath -ArgumentList @('tools/plugin-smoke.mjs', '--root', $script:Root, '--json', 'out/evidence/plugin-smoke.json')
-            prereqs = @('tools/plugin-smoke.mjs', 'lib/index.js', 'lib/client.js', 'package.json')
+            prereqs = @('tools/plugin-smoke.mjs', 'tools/client-contract.mjs', 'lib/index.js', 'lib/client.js', 'package.json')
         },
         [pscustomobject][ordered]@{
             id = 'install-plan'; title = 'pwsh -File install.ps1 -WhatIf'
@@ -1261,7 +1430,7 @@ function Get-PlannedSteps {
             prereqs = @('install.ps1')
         },
         [pscustomobject][ordered]@{
-            id = 'package'; title = 'npm pack -> dsh-screenshot-<version>.tgz (files whitelist enforced)'
+            id = 'package'; title = 'npm pack -> dsh-screenshot-<version>.tgz (files whitelist enforced; -SkipPack reuses the existing tarball instead)'
             command = '(cmd.exe /c) npm pack --json --loglevel=error   (cwd: ' + $script:Root + ')'
             prereqs = @('package.json', 'bin/SnipTool.exe', 'lib/index.js', 'lib/client.js', 'cordis.patch.yml')
         },
@@ -1282,11 +1451,23 @@ function Invoke-WiringCheck {
     $requiredFiles = @(
         'build.ps1', 'install.ps1', 'package.json',
         'tools/plugin-smoke.mjs', 'tools/e2e.ps1',
+        'tools/client-contract.mjs', 'tools/fixtures/client-470abc0e.js', 'tools/fixtures/client-baseline.json',
         'docs/VERIFY.md', 'docs/RELEASE.md',
         'lib/index.js', 'lib/client.js', 'cordis.patch.yml'
     )
     foreach ($rel in $requiredFiles) {
         if (Test-MissingRel $rel) { $problems += "missing file: $rel" }
+    }
+    $negFixture = Join-Path $script:Root 'tools/fixtures/client-470abc0e.js'
+    if (Test-Path -LiteralPath $negFixture) {
+        $negExpected = '470abc0e7b6d35fba0eaaac1806a861f73dfe11aa6161472089895d6da84deee'
+        $negHash = ''
+        try { $negHash = (Get-FileHash -LiteralPath $negFixture -Algorithm SHA256).Hash.ToLowerInvariant() } catch { $negHash = '' }
+        if ($negHash -ne $negExpected) {
+            $problems += ("negative fixture drifted: tools/fixtures/client-470abc0e.js is '{0}', expected {1} — it must stay the exact bundle that broke web boot, otherwise the contract gate proves nothing" -f $negHash, $negExpected)
+        } else {
+            $notes += 'negative fixture = shipped 2.0.0 lib/client.js (sha256 470abc0e...)'
+        }
     }
     if (-not (Test-Path (Join-Path $script:Root 'src'))) { $problems += 'missing directory: src/' }
     if (-not $facts.csc) { $problems += "csc.exe not found: $script:CscPath" }
@@ -1345,6 +1526,7 @@ try {
         Invoke-LongShotProbeStep
         Invoke-LongShotNegativeStep
         Invoke-CrashProbeStep
+        Invoke-ClientContractStep
         Invoke-PluginStep
         Invoke-InstallPlanStep
         Invoke-PackageStep

@@ -74,6 +74,6 @@ Requires Windows 10/11 and DeepSeek Harness. No administrator privileges or exte
 
 ## Architecture
 
-- **Host (lib/index.js)**: Cordis plugin service declaring `inject = ['webServer']`, manages warm process (`SnipTool.exe --serve --parent <pid>`), handles `/shot/api/capture` and `/shot/api/last` routes, passes language and theme without hide parameter.
+- **Host (lib/index.js)**: Cordis plugin service declaring `inject = ['webServer']`, manages warm process (`SnipTool.exe --serve --parent <pid>`), handles `/shot/api/capture`, `/shot/api/last`, and `/shot/api/probe` routes (`/shot/api/probe` is disabled by default; `touch %TEMP%\dsh-shot-debug.on` and refresh, then POST `/shot/api/probe` will write front-end diagnostic JSON to `%TEMP%\dsh-shot-probe.json`), passes language and theme without hide parameter.
 - **Client (lib/client.js)**: Injects scissors button to the left of the microphone, removes legacy options menu, injects image into composer via synthetic paste event without auto-sending, provides readable bilingual errors.
 - **Native (bin/SnipTool.exe)**: Native C# overlay implementing window/screen/taskbar detection, scrolling capture, unified annotation editor, and settings persistence.

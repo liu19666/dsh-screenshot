@@ -1,5 +1,22 @@
 # Changelog
 
+## 2.1.0
+
+- Removed the long-screenshot feature entirely (scrolling capture, the preview window, the top
+  switch bar and the settings file). The wheel-driven preview never worked reliably on real
+  pages, so it was dropped instead of patched further.
+- Entry is two gestures on the same scissors button: left click captures with the DSH window
+  kept, right click captures with the DSH window minimised (restored on exit). The tooltip now
+  reads 左键保留窗口，右键最小化窗口 / Left click keeps the window, right click minimises it.
+- Hiding is decided per click and travels in the wake line (`hide=1|0`) or the cold-start flag
+  (`--hide` / `--no-hide`); nothing is persisted any more.
+
+## 2.0.0
+
+- Rewritten as a Cordis plugin with a native helper: window / monitor / taskbar detection,
+  dimming with a size badge, manual drag selection, an annotation toolbar (rectangle, ellipse,
+  line, arrow, pen, text, mosaic) and one-click insertion into the composer without sending.
+
 ## 1.0.5
 
 - The composer tooltip follows the DSH language again: its pointer listeners were bound to

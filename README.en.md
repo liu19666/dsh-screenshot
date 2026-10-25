@@ -1,41 +1,44 @@
-# DSH screenshot tool
+# DSH Screenshot Tool v2
 
-A screenshot tool for DeepSeek Harness: select a region, annotate it, pick a colour, confirm to copy.
+Native screenshot tool v2 for DeepSeek Harness on Windows: automatic window/screen/taskbar recognition & highlight, drag selection, shapes/pen/text annotations, mosaic, long scrolling screenshot, color picker, and injection into DSH composer without auto-sending.
 
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2B-0078D6?logo=windows&logoColor=white)
 ![dsh](https://img.shields.io/badge/DeepSeek%20Harness-%E2%89%A50.2.0-4B6BFB)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![release](https://img.shields.io/github/v/release/Tansukii/dsh-screenshot?label=release&color=blue)
+![version](https://img.shields.io/badge/version-2.0.0-blue)
 
 English | [中文](README.md)
 
 ![Overview](docs/screenshots/overview-zh.png)
+> *Note: Diagram shows v1 interface. v2 adds top toggle bar for Hide DSH / Long Screenshot, and bottom editor with Mosaic and Save/Cancel/Confirm.*
 
-## Features
+## Features (R1–R30)
 
-| | |
+| Feature | Description |
 |---|---|
-| One click, ~0.2 s to the overlay | resident warm process, no startup wait |
-| Drag to select | window auto-detect, live size readout |
-| Annotations | pen, line, arrow, rectangle, ellipse, text; `Ctrl+Z` undo |
-| Colour | three widths, swatch palette, solid fill |
-| Magnifier | coordinates and hex under the pointer, press `C` to copy the colour |
-| Edge snapping | selection, handles and text stay inside the screen |
-| Right click cancels | without leaking the desktop context menu |
-| Follows the UI language | Chinese DSH → Chinese tool, English DSH → English tool |
-| Light on the machine | ~6 MB idle, ~0.5 % CPU, exits when idle |
+| Scissors Entry Button | Injected to the left of the microphone button in the same container; matching size, border radius, and hover state; legacy options menu removed (R1, R2) |
+| Auto Target Detection | Moving mouse automatically highlights windows, desktop screens, or taskbars with a blue border, white size badge (e.g. `888×777`), and exterior dimming (R6, R8, R9) |
+| Click & Drag Selection | Click to select the detected region directly; or drag to draw a bounding box (R10, R11) |
+| Hide DSH Persistence | Top bar includes a "Hide DSH Window" checkbox (default checked), natively persisted; automatically restores DSH window on exit or completion (R3, R5, R13) |
+| Long Screenshot & Preview | Enable "Long Screenshot" in top bar; scroll wheel inside selection captures and stitches content with live proportional preview (R13, R14, R15) |
+| Unified Editor | Both normal and long screenshots enter the unified editor: shapes (rect/ellipse/line), arrow, pen, text (with color & thickness), and mosaic (R18, R20, R21) |
+| Save / Cancel / Confirm | Right-side actions: Save PNG to disk, Cancel (red cross), Confirm (green checkmark) (R22, R24) |
+| Composer Injection (No Auto-Send) | Confirmed image is injected into the DSH composer via synthetic paste event; never auto-sent (R23) |
+| Quick Exit | Right-click outside selection or press Esc to cancel and restore DSH (R4, R17) |
+| Warm Process | Fast launch via resident `SnipTool.exe --serve --parent <pid>` (R27) |
+| Locale & Theme Sync | Follows DSH language (zh/en) and theme (light/dark) (R28) |
+| 100% Local & Zero Telemetry | Native .NET Framework 4.8 / GDI+ implementation; zero network requests, zero telemetry (R26, R29) |
 
 ![Toolbar](docs/screenshots/toolbar.png)
+> *Note: Diagram shows v1 toolbar. v2 unified editor adds Mosaic in the middle, and Save/Cancel/Confirm on the right.*
 
-## Install
+## Installation
 
-Requires Windows 10/11 and DeepSeek Harness. No administrator rights, no extra runtime
-(`.NET Framework 4.0` ships with Windows).
+Requires Windows 10/11 and DeepSeek Harness. No administrator privileges or external runtimes required.
 
-1. Put the repository under your plugins directory, e.g. `D:\dsh-home\plugins\dsh-screenshot`.
+1. Copy or clone this repository into your plugins directory, e.g. `D:\dsh-home\plugins\dsh-screenshot`.
 
-2. Add the bundle and a link entry to your DSH profile
-   (`<DSH_HOME>/profiles/<name>/package.json`):
+2. Add the bundle and dependency to your DSH profile (`<DSH_HOME>/profiles/<name>/package.json`):
 
    ```json
    {
@@ -50,68 +53,27 @@ Requires Windows 10/11 and DeepSeek Harness. No administrator rights, no extra r
    }
    ```
 
-3. Restart DSH; this button appears on the right of the composer:
+3. Launch DSH. The scissors button appears immediately to the left of the microphone button:
 
-   ![Screenshot button](docs/screenshots/button.png)
+   ![Screenshot Button](docs/screenshots/button.png)
+   > *Note: Diagram shows v1 button style. v2 scissors button is placed immediately before the mic in the same container, without the old chevron options menu.*
 
-## Shortcuts
+## Keyboard & Mouse Shortcuts
 
-| Action | Effect |
+| Action | Result |
 |---|---|
-| Click the button or drag | Start a capture |
-| Single click | Mark the window under the pointer |
-| Drag a handle | Resize the selection (magnifier stays on) |
-| `Ctrl+Z` | Undo the last annotation |
-| `C` | Copy the colour under the pointer (`#RRGGBB`) |
-| `Enter` or `✓` | Copy and exit |
-| `Esc`, right click or `✕` | Cancel |
+| Click scissors button | Open native screenshot overlay |
+| Click | Confirm automatically detected window/screen/taskbar |
+| Drag mouse | Manually select a rectangular region |
+| Drag handles | Adjust selection bounds |
+| Wheel scroll inside selection | Long screenshot scrolling capture and stitch |
+| `Ctrl+Z` | Undo last annotation |
+| `C` or `Ctrl+C` | Copy color hex (`#RRGGBB`) under cursor |
+| Enter or `✓` | Confirm and inject image into DSH composer (no auto-send) |
+| `Esc`, Right Click, `✕` | Cancel screenshot and restore DSH window |
 
-## Privacy
+## Architecture
 
-No network requests, no telemetry, no uploads: the image only goes to the clipboard. The tool
-never captures the screen until you ask it to, exits after three idle minutes and follows DSH
-out of memory. Set `DSH_SNIP_DEBUG=1` to write `%TEMP%\dsh-text.log`; nothing is written by default.
-
-## Implementation
-
-The plugin host keeps one resident `SnipTool.exe` and wakes it over a named pipe
-(`\\.\pipe\dsh-snip-show`), waiting for an explicit acknowledgement so a dead process is
-detected instead of silently ignored. Theme and UI language travel with each request. The
-overlay is drawn by hand: a double-buffered bitmap for the dimmed desktop and bright selection,
-a layered window for the toolbar, a small window for the magnifier.
-
-```
-bin/SnipTool.exe      prebuilt native tool
-src/SnipTool.cs       all C# source, single file
-lib/index.js          plugin host: wake, theme, language, routes
-lib/client.js         web button and menu
-cordis.patch.yml      plugin registration
-```
-
-| Metric | Measured |
-|---|---|
-| Warm wake | 170–200 ms |
-| First wake after warm-up | 330–390 ms |
-| Cold start | ≈ 1.1 s |
-| Idle working set | ≈ 6 MB |
-
-Waking retries four times; if the resident process never acknowledges, a host-side watchdog
-kills only processes older than eight seconds and starts a fresh one. Every timer and mouse-hook
-callback checks for disposal, so a closing session cannot throw "cannot access a disposed object".
-
-## Limitations
-
-Verified on a single display at 150 % scaling; mixed-DPI and multi-monitor setups are untested.
-Windows only. The UI language is read from the `locale` entry in the DSH profile, so a future
-layout change there needs a matching update here. Annotations can only be undone one by one.
-
-## Development
-
-```powershell
-csc /nologo /target:winexe /optimize+ /out:bin\SnipTool.exe `
-    /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll src\SnipTool.cs
-```
-
-## License
-
-MIT
+- **Host (lib/index.js)**: Cordis plugin service declaring `inject = ['webServer']`, manages warm process (`SnipTool.exe --serve --parent <pid>`), handles `/shot/api/capture` and `/shot/api/last` routes, passes language and theme without hide parameter.
+- **Client (lib/client.js)**: Injects scissors button to the left of the microphone, removes legacy options menu, injects image into composer via synthetic paste event without auto-sending, provides readable bilingual errors.
+- **Native (bin/SnipTool.exe)**: Native C# overlay implementing window/screen/taskbar detection, scrolling capture, unified annotation editor, and settings persistence.

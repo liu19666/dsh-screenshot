@@ -19,3 +19,6 @@ desktop.ini
 
 # dsh fs-observation lock files (transient)
 .dsh-ops-update-*.lock
+
+# packaged artifacts and install evidence snapshots
+dist/

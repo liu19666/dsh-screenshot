@@ -18,10 +18,13 @@
 
 `Detect`（`src/Detect.cs`）：
 
-- `List<WindowInfo> EnumerateWindows(int excludePid)` — Z 序，front-most first；过滤不可见/零面积/本进程。
-- `List<MonitorInfo> EnumerateMonitors()` — `Screen.AllScreens`，含 Bounds 与 WorkArea。
-- `TargetHit HitTest(Point pt, int excludePid)` — 优先级：窗口 > 任务栏 > 所在屏幕。
-- `TargetRect TaskbarBounds(TargetRect monitorBounds)` — 自动隐藏时返回空矩形。
+- `List<WindowInfo> EnumerateWindows(int excludePid)` — Z 序，front-most first，`ZOrder` 从 0 开始（0 = 最前）。
+  - 必须过滤：本进程窗口、`!IsWindowVisible`、宽或高 <= 0、`IsIconic`（最小化）、cloaked UWP（`DWMWA_CLOAKED != 0`）、`WS_EX_TOOLWINDOW`。
+  - 必须排除 shell 类窗口，交给任务栏/屏幕分支处理：`Shell_TrayWnd`、`Shell_SecondaryTrayWnd`（任务栏）、`Progman`、`WorkerW`（桌面）。
+- `List<MonitorInfo> EnumerateMonitors()` — `Screen.AllScreens`，含 Bounds 与 WorkArea、Primary 标记；坐标必须是真实物理像素，**不得硬编码 1920x1080**。
+- `TargetHit HitTest(Point pt, int excludePid)` — 判定顺序：任务栏 > 窗口（Z 序第一个命中）> 所在屏幕。任务栏优先是刻意的：任务栏恒为 topmost，且窗口列表已排除它，这样命中语义唯一。
+  - `TargetHit.Label` 语义（供 UI 显示目标名，**尺寸标签由 overlay 自己用 Rect 渲染**）：窗口 = 标题（空则类名）；任务栏 = 本地化「任务栏」/`Taskbar`；屏幕 = 「屏幕 N」/`Display N`。
+- `TargetRect TaskbarBounds(TargetRect monitorBounds)` — 自动隐藏（`ABM_GETSTATE` 的 `ABS_AUTOHIDE`）或该屏无任务栏时返回空矩形（`W`/`H` 为 0）。
 
 `LongShot`（`src/LongShot.cs`）：
 
@@ -65,3 +68,11 @@
 - 不执行 `git commit`/`git push`（captain 统一提交）；不重启 DSH 桌面进程。
 - 不删除 `bin/SnipTool.exe` 之外的任何交付文件；不写仓库外的路径（除 `out/`、`%TEMP%`）。
 - 每个任务完成时用 `agent_teams_update_task` 提交：status=completed、changedPaths、acceptanceResults、commandsRun。
+
+## 集成注意项（captain 记录，t5 必须逐条处理）
+
+1. **两个冒烟脚本重复**：`tools/plugin-smoke.mjs`（harness-dev，支持 `--root`/`--json`，e2e 第 5 步用它）与 `test/plugin/smoke.mjs`（plugin-dev，桩加载 5 条路由）。t5 需收敛为唯一入口，或在 `docs/VERIFY.md` 写清各自职责。
+2. **`test/plugin/smoke.mjs` 依赖 cwd**：它按 `dsh-screenshot-v2/lib/index.js` 相对当前目录解析，在仓库根跑会 `ERR_MODULE_NOT_FOUND`，在 workspace 根跑才 exit 0。t5 必须改成基于 `import.meta.url` 解析仓库根，任何 cwd 下都能跑。
+3. **README 配图**：`docs/screenshots/*.png` 是 v1.0.5 旧图，v2 已加顶部开关栏与底部马赛克/三键工具栏。t5 用 `out/selftest` 新图替换，或在图下标注示意图。
+4. **隐藏逻辑归属**：隐藏 DSH 由原生按 `%LOCALAPPDATA%\dsh-screenshot\settings.json` 决定，插件不得再传 `hide`；t5 复核 `lib/index.js` 参数与 `Program.Main` 参数表一致。
+5. **Web GUI 端口已变**：当前实例是 `http://127.0.0.1:64265`（旧文档写的 62916 已失效）；任何成员都不要重启 DSH。

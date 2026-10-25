@@ -1,7 +1,7 @@
 {
   "name": "dsh-screenshot",
-  "version": "1.0.5",
-  "description": "Built-in screenshot tool for DeepSeek Harness on Windows: instant region capture, annotations, colour picker, all local.",
+  "version": "2.0.0",
+  "description": "Built-in screenshot tool v2 for DeepSeek Harness on Windows: native overlay, auto-detection, long screenshot, editor, all local.",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
@@ -22,7 +22,9 @@
     "lib/",
     "src/",
     "cordis.patch.yml",
-    "docs/"
+    "docs/",
+    "README.md",
+    "README.en.md"
   ],
   "os": [
     "win32"

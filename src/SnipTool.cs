@@ -105,18 +105,23 @@ static class Program
         TLog("start exe=" + Application.ExecutablePath + " built=" +
             System.IO.File.GetLastWriteTime(Application.ExecutablePath).ToString("HH:mm:ss"));
         DarkMode = SystemUsesDarkApps();
-        bool hide = false, serve = false, showNow = false;
+        Settings userSettings = Settings.Load();
+        bool hide = userSettings.HideDsh, serve = false, showNow = false;
         int parentPid = 0;
         for (int i = 0; i < args.Length; i++)
         {
             if (args[i] == "--hide") hide = true;
+            else if (args[i] == "--no-hide") hide = false;
             else if (args[i] == "--dark") DarkMode = true;
             else if (args[i] == "--light") DarkMode = false;
             else if (args[i] == "--serve") serve = true;
             else if (args[i] == "--show") showNow = true;
             else if (args[i] == "--parent" && i + 1 < args.Length) int.TryParse(args[i + 1], out parentPid);
             else if (args[i] == "--lang" && i + 1 < args.Length) LangZh = args[i + 1].ToLowerInvariant().StartsWith("zh");
+            else if (args[i] == "--out" && i + 1 < args.Length) OutDir = args[i + 1];
+            else if (args[i] == "--client") ClientDelivers = true;
         }
+        ParentPid = parentPid;
         AppDomain.CurrentDomain.UnhandledException += (s2, ev2) =>
         {
             try { LogCrash("EX " + ev2.ExceptionObject); } catch (Exception) { }
@@ -156,7 +161,20 @@ static class Program
             // always matches the application instead of the OS.
             if (request.Contains("lang=zh")) LangZh = true;
             else if (request.Contains("lang=en")) LangZh = false;
-            RunSession(request.Contains("hide=1"));
+            userSettings = Settings.Load();
+            bool sessionHide = userSettings.HideDsh;
+            if (request.Contains("hide=1")) sessionHide = true;
+            else if (request.Contains("hide=0")) sessionHide = false;
+            if (request.Contains("client=1")) ClientDelivers = true;
+            else if (request.Contains("client=0")) ClientDelivers = false;
+            // The host appends its result directory last, and a path may contain spaces.
+            int outAt = request.IndexOf("out=");
+            if (outAt > 0)
+            {
+                string dir = request.Substring(outAt + 4).Trim().Trim('"');
+                if (dir.Length > 0) OutDir = dir;
+            }
+            RunSession(sessionHide);
             Program.TLog("serve: session ended");
             TrimIdle();
         }
@@ -197,9 +215,44 @@ static class Program
 
     public static string T(string zh, string en) { return LangZh ? zh : en; }
 
+    // Result hand-off to the web half. --out names the directory both halves agreed on
+    // (empty means %TEMP%, which is what a standalone run without a plugin uses).
+    public static string OutDir = System.IO.Path.GetTempPath();
+
+    public static int ParentPid = 0;
+
+    // --client: DSH itself reads the PNG from OutDir and pastes it into the composer, so
+    // this process must NOT also synthesize Ctrl+V or the image lands twice.
+    public static bool ClientDelivers;
+
+    public static string ResultFile
+    {
+        get { return System.IO.Path.Combine(OutDir, "dsh-snip-last.png"); }
+    }
+
+    public static string StateFile
+    {
+        get { return System.IO.Path.Combine(OutDir, "dsh-snip-state.json"); }
+    }
+
+    // Session outcome for the web half: "ok" (ResultFile was just written) or "cancel"
+    // (nothing to pick up — stop polling). Written after the PNG so a reader that sees
+    // "ok" always finds the file; "at" only has to change, never to be interpreted.
+    public static void WriteState(string result, string error = null)
+    {
+        try
+        {
+            if (!System.IO.Directory.Exists(OutDir)) System.IO.Directory.CreateDirectory(OutDir);
+            string errField = string.IsNullOrEmpty(error) ? "" : ",\r\n  \"error\": \"" + error.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"";
+            System.IO.File.WriteAllText(StateFile,
+                "{\r\n  \"result\": \"" + result + "\",\r\n  \"at\": " + DateTime.UtcNow.Ticks +
+                ",\r\n  \"file\": \"" + ResultFile.Replace("\\", "\\\\") + "\"" + errField + "\r\n}\r\n");
+        }
+        catch (Exception) { }
+    }
+
     public static void LogCrash(string text)
     {
-        if (!DebugLog) return;
         try
         {
             System.IO.File.AppendAllText(
@@ -364,14 +417,14 @@ public class SnipForm : Form
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr hWnd, int index);
 
-    Bitmap screen;
-    Point origin;
-    Rectangle sel;
-    bool hasSel;
+    internal Bitmap screen;
+    internal Point origin;
+    internal Rectangle sel;
+    internal bool hasSel;
     string tool = "select";
     readonly List<Anno> annos = new List<Anno>();
     Anno draft;
-    int dragMode; // 1 new, 2 move, 3 resize, 4 pending click
+    internal int dragMode; // 1 new, 2 move, 3 resize, 4 pending click
     Rectangle moveBox;    // bounds of the annotation being dragged (containment clamp)
     int handle = -1;
     Point dragStart;
@@ -381,6 +434,7 @@ public class SnipForm : Form
     ToolBarForm bar;
     Label hint;
     bool closing;   // teardown started: late callbacks from other windows must do nothing
+    bool confirmed; // the user pressed "done": the session must not report a cancel
     bool hideDsh;
     IntPtr dshWnd = IntPtr.Zero;
     Point lastMouse;
@@ -393,6 +447,21 @@ public class SnipForm : Form
     Point lastProbe;
     DateTime lastProbeAt = DateTime.MinValue;
 
+    Settings settings;
+    TopBarForm topBar;
+    LongPreviewForm longPreview;
+    internal bool isLongShotMode;
+    internal bool isLongCapturing;
+    internal readonly List<Bitmap> longFrames = new List<Bitmap>();
+    internal readonly List<int> longOffsets = new List<int>();
+    internal Bitmap longComposed;
+    internal System.Windows.Forms.Timer longTimer;
+    Bitmap lastSample;
+    internal int stableCount;
+    delegate IntPtr KeyboardHookProc(int nCode, IntPtr wParam, IntPtr lParam);
+    internal IntPtr keyboardHook = IntPtr.Zero;
+    KeyboardHookProc keyboardHookProc;
+    internal bool HasKeyboardHook { get { return keyboardHook != IntPtr.Zero; } }
     // Toolbar palette, resolved once from the light/dark mode.
     Color barBack, barFore, barHover, barOn;
 
@@ -407,7 +476,9 @@ public class SnipForm : Form
 
     public SnipForm(bool hide)
     {
+        settings = Settings.Load();
         hideDsh = hide;
+        isLongShotMode = settings.LongShot;
         FormBorderStyle = FormBorderStyle.None;
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;
@@ -465,10 +536,34 @@ public class SnipForm : Form
             // reaches the desktop.
             if (wParam == (IntPtr)0x0205)
             {
-                try { BeginInvoke((MethodInvoker)(() => { if (!closing && Visible) Close(); })); }
-                catch (Exception) { }
+                if (isLongCapturing)
+                {
+                    try { BeginInvoke((MethodInvoker)(() => { CancelLongShot(); })); }
+                    catch (Exception) { }
+                }
+                else
+                {
+                    try { BeginInvoke((MethodInvoker)(() => { if (!closing && Visible) Close(); })); }
+                    catch (Exception) { }
+                }
             }
             return (IntPtr)1;
+        }
+        if (nCode >= 0 && wParam == (IntPtr)0x020A && isLongCapturing) // WM_MOUSEWHEEL
+        {
+            try
+            {
+                var info = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
+                var pt = new Point(info.pt.X - origin.X, info.pt.Y - origin.Y);
+                // Dark area outside sel: swallow wheel so background application doesn't scroll!
+                if (!sel.Contains(pt))
+                {
+                    return (IntPtr)1;
+                }
+                lastWheelTick = Environment.TickCount;
+                stableCount = 0;
+            }
+            catch (Exception) { }
         }
         if (nCode >= 0 && wParam == (IntPtr)0x0201 && editor != null)   // WM_LBUTTONDOWN
         {
@@ -490,8 +585,80 @@ public class SnipForm : Form
         return CallNextHookEx(mouseHook, nCode, wParam, lParam);
     }
 
+    [DllImport("user32.dll")] static extern IntPtr SetWindowsHookEx(int idHook, KeyboardHookProc cb, IntPtr hMod, uint threadId);
+
+    void InstallKeyboardHook()
+    {
+        if (keyboardHook != IntPtr.Zero) return;
+        keyboardHookProc = KeyboardHookCallback;
+        // N-3: WH_KEYBOARD_LL is inherently system-global (a thread-scoped install fails,
+        // which is exactly what happened when this tried threadId=current). The swallow
+        // risk is therefore handled in the callback itself: Enter/Esc are consumed only
+        // when our overlay is the foreground window or the cursor is inside the running
+        // selection, everything else falls through to CallNextHookEx untouched, and the
+        // callback bails out untouched once the form is closing/disposed.
+        keyboardHook = SetWindowsHookEx(13, keyboardHookProc, IntPtr.Zero, 0);
+    }
+
+    internal void UninstallKeyboardHook()
+    {
+        if (keyboardHook != IntPtr.Zero)
+        {
+            try { UnhookWindowsHookEx(keyboardHook); } catch (Exception) { }
+            keyboardHook = IntPtr.Zero;
+        }
+        keyboardHookProc = null;
+    }
+
+    IntPtr KeyboardHookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        // N-3: the callback can outlive the form (the OS may still hold the hook for a
+        // few messages after UnhookWindowsHookEx). Touching a disposed form here threw
+        // inside BeginInvoke and only Application.ThreadException ever saw it.
+        if (closing || IsDisposed || Disposing) return CallNextHookEx(keyboardHook, nCode, wParam, lParam);
+        if (nCode >= 0 && isLongCapturing && (wParam == (IntPtr)0x0100 || wParam == (IntPtr)0x0104))
+        {
+            IntPtr fg = GetForegroundWindow();
+            uint fgPid = 0;
+            if (fg != IntPtr.Zero) GetWindowThreadProcessId(fg, out fgPid);
+            bool isOurWindow = (fgPid == (uint)MyPid);
+            Point cur = Cursor.Position;
+            Point clientPt = new Point(cur.X - origin.X, cur.Y - origin.Y);
+            bool inSel = sel.Contains(clientPt);
+
+            // N-3: Only intercept Enter/Esc when our window is foreground or cursor is within sel
+            if (isOurWindow || inSel)
+            {
+                int vk = Marshal.ReadInt32(lParam);
+                if (vk == 0x0D) // VK_RETURN
+                {
+                    BeginInvoke((MethodInvoker)(() => FinishLongShot()));
+                    return (IntPtr)1;
+                }
+                if (vk == 0x1B) // VK_ESCAPE
+                {
+                    BeginInvoke((MethodInvoker)(() => CancelLongShot()));
+                    return (IntPtr)1;
+                }
+            }
+        }
+        return CallNextHookEx(keyboardHook, nCode, wParam, lParam);
+    }
     void FindDsh()
     {
+        if (Program.ParentPid != 0)
+        {
+            try
+            {
+                var p = Process.GetProcessById(Program.ParentPid);
+                if (p != null && p.MainWindowHandle != IntPtr.Zero)
+                {
+                    dshWnd = p.MainWindowHandle;
+                    return;
+                }
+            }
+            catch (Exception) { }
+        }
         foreach (var p in Process.GetProcessesByName("DeepSeek Harness"))
         {
             if (p.MainWindowHandle != IntPtr.Zero) { dshWnd = p.MainWindowHandle; return; }
@@ -505,6 +672,7 @@ public class SnipForm : Form
         var vs = SystemInformation.VirtualScreen;
         origin = vs.Location;
         Bounds = vs;
+        string dshWarning = null;
         if (hideDsh)
         {
             FindDsh();
@@ -515,6 +683,11 @@ public class SnipForm : Form
                 // iconic almost at once, the animation only needs a short grace period.
                 for (int i = 0; i < 15 && !Program.IsIconic(dshWnd); i++) Thread.Sleep(10);
                 Thread.Sleep(200);   // DWM fades the window out; too short and it lands in the shot
+            }
+            else
+            {
+                Program.LogCrash("FindDsh failed: dshWnd is IntPtr.Zero (hide requested, parentPid=" + Program.ParentPid + ")");
+                dshWarning = Program.T("未找到 DSH 窗口，截图时未隐藏", "DSH window not found, not minimized");
             }
         }
         screen = new Bitmap(vs.Width, vs.Height);
@@ -529,16 +702,16 @@ public class SnipForm : Form
         InitBlit();
 
         bar = new ToolBarForm();
-        bar.Add("pen", Program.T("画笔", "Pen"), () => ToggleTool("pen"), Icons.Pen);
-        bar.Add("line", Program.T("线条", "Line"), () => ToggleTool("line"), Icons.Line);
-        bar.Add("arrow", Program.T("箭头", "Arrow"), () => ToggleTool("arrow"), Icons.Arrow);
         bar.Add("rect", Program.T("矩形", "Rectangle"), () => ToggleTool("rect"), Icons.Rect);
         bar.Add("ellipse", Program.T("椭圆", "Ellipse"), () => ToggleTool("ellipse"), Icons.Ellipse);
+        bar.Add("line", Program.T("直线", "Line"), () => ToggleTool("line"), Icons.Line);
+        bar.Add("arrow", Program.T("箭头", "Arrow"), () => ToggleTool("arrow"), Icons.Arrow);
+        bar.Add("pen", Program.T("画笔", "Pen"), () => ToggleTool("pen"), Icons.Pen);
         bar.Add("text", Program.T("文本", "Text"), () => ToggleTool("text"), Icons.Text);
-        bar.Add("undo", Program.T("撤销", "Undo"), UndoLast, Icons.Undo);
-        bar.Add("save", Program.T("下载", "Save"), SaveToFile, Icons.Save);
-        bar.Add("close", Program.T("退出", "Cancel"), () => Close(), Icons.Close);
-        bar.Add("done", Program.T("完成", "Done"), () => CopyAndClose(), Icons.Check);
+        bar.Add("mosaic", Program.T("马赛克", "Mosaic"), () => ToggleTool("mosaic"), Icons.Mosaic);
+        bar.Add("save", Program.T("保存", "Save"), SaveToFile, Icons.Save);
+        bar.Add("close", Program.T("取消", "Cancel"), () => Close(), Icons.Close);
+        bar.Add("done", Program.T("确定", "Done"), () => CopyAndClose(), Icons.Check);
         bar.Strip.PenWidth = 5;
         bar.Strip.PenColor = Color.FromArgb(255, 59, 48);
         bar.Strip.PenChanged = SaveInk;
@@ -549,11 +722,11 @@ public class SnipForm : Form
             BackColor = Color.FromArgb(160, 0, 0, 0),
             ForeColor = Color.White,
             Font = new Font("Microsoft YaHei UI", 9F),
-            Text = "拖动框选，或点击高亮的窗口 · Esc 取消  (v52)",
+            Text = !string.IsNullOrEmpty(dshWarning)
+                ? dshWarning + " · " + Program.T("拖动框选 · Esc 取消", "Drag to select · Esc to cancel")
+                : Program.T("拖动框选，或点击高亮的窗口 · Esc 取消", "Drag to select, or click a highlighted window · Esc to cancel"),
             Padding = new Padding(10, 5, 10, 5),
         };
-        Controls.Add(hint);
-        // No hint strip across the top: the toolbar is self-explanatory and the band
         // sat right on the screenshot.
         hint.Visible = false;
         PositionChrome();
@@ -631,6 +804,10 @@ public class SnipForm : Form
         // Not started here: the magnifier is driven from OnMouseMove, so an idle overlay
         // must not wake the process 60 times a second.
         InstallMouseHook();
+
+        topBar = new TopBarForm(this, settings);
+        topBar.PositionAt(origin, vs.Size);
+        topBar.Show(this);
     }
 
     // The toolbar stays visible while the frame is edited. Hiding it left stale
@@ -737,14 +914,14 @@ public class SnipForm : Form
     static bool Adjustable(Anno a)
     {
         return a != null && a.Points.Count >= 2 &&
-               (a.Tool == "line" || a.Tool == "arrow" || a.Tool == "rect" || a.Tool == "ellipse");
+               (a.Tool == "line" || a.Tool == "arrow" || a.Tool == "rect" || a.Tool == "ellipse" || a.Tool == "mosaic");
     }
 
     // Four corners then four edge midpoints, matching the frame's handle layout.
     Point[] HandlesOf(Anno a)
     {
         if (!Adjustable(a)) return new Point[0];
-        if (a.Tool != "rect" && a.Tool != "ellipse") return new[] { a.Points[0], a.Points[a.Points.Count - 1] };
+        if (a.Tool != "rect" && a.Tool != "ellipse" && a.Tool != "mosaic") return new[] { a.Points[0], a.Points[a.Points.Count - 1] };
         var r = Normalize(a.Points[0], a.Points[a.Points.Count - 1]);
         int cx = r.Left + r.Width / 2, cy = r.Top + r.Height / 2;
         return new[]
@@ -768,7 +945,7 @@ public class SnipForm : Form
     // The four system resize cursors, picked by what that handle actually changes.
     static Cursor HandleCursor(Anno a, int idx)
     {
-        if (a.Tool == "rect" || a.Tool == "ellipse")
+        if (a.Tool == "rect" || a.Tool == "ellipse" || a.Tool == "mosaic")
         {
             switch (idx)
             {
@@ -960,6 +1137,12 @@ public class SnipForm : Form
             if (a.Filled) return d <= 1f + tol / Math.Min(rx, ry);
             return Math.Abs(d - 1f) <= tol / Math.Min(rx, ry);
         }
+        if (a.Tool == "mosaic")
+        {
+            var r = Normalize(first, last);
+            r.Inflate((int)tol, (int)tol);
+            return r.Contains(p);
+        }
         return DistToSegment(p, first, last) <= tol;
     }
 
@@ -976,7 +1159,7 @@ public class SnipForm : Form
     }
 
     // Ink settings, one pair per tool: the option panel edits whichever tool is active.
-    static readonly string[] InkTools = { "pen", "line", "arrow", "rect", "ellipse", "text" };
+    static readonly string[] InkTools = { "pen", "line", "arrow", "rect", "ellipse", "text", "mosaic" };
     readonly System.Collections.Generic.Dictionary<string, int> inkWidths =
         new System.Collections.Generic.Dictionary<string, int>();
     readonly System.Collections.Generic.Dictionary<string, Color> inkColors =
@@ -1060,8 +1243,309 @@ public class SnipForm : Form
     {
         tool = "select";
         bar.Selected = null;
-        ShowBar();
         SetLoupeVisible(false);
+        if (topBar != null && !topBar.IsDisposed) topBar.Hide();
+        if (isLongShotMode)
+        {
+            StartLongShotCapture();
+        }
+        else
+        {
+            ShowBar();
+        }
+    }
+
+    public void SetHideDsh(bool hide)
+    {
+        hideDsh = hide;
+    }
+
+    public void SetLongShotMode(bool on)
+    {
+        isLongShotMode = on;
+    }
+
+    public static void ApplyMosaic(Graphics g, Bitmap src, Rectangle r, int blockSize)
+    {
+        if (src == null || r.Width <= 0 || r.Height <= 0) return;
+        Rectangle srcRect = new Rectangle(0, 0, src.Width, src.Height);
+        r = Rectangle.Intersect(r, srcRect);
+        if (r.Width <= 0 || r.Height <= 0) return;
+
+        int bw = Math.Max(1, r.Width / blockSize);
+        int bh = Math.Max(1, r.Height / blockSize);
+        using (var small = new Bitmap(bw, bh))
+        {
+            using (var sg = Graphics.FromImage(small))
+            {
+                sg.InterpolationMode = InterpolationMode.Low;
+                sg.DrawImage(src, new Rectangle(0, 0, bw, bh), r, GraphicsUnit.Pixel);
+            }
+            var oldMode = g.InterpolationMode;
+            var oldPixel = g.PixelOffsetMode;
+            g.InterpolationMode = InterpolationMode.NearestNeighbor;
+            g.PixelOffsetMode = PixelOffsetMode.Half;
+            g.DrawImage(small, r, new Rectangle(0, 0, bw, bh), GraphicsUnit.Pixel);
+            g.InterpolationMode = oldMode;
+            g.PixelOffsetMode = oldPixel;
+        }
+    }
+
+    static bool ImagesIdentical(Bitmap a, Bitmap b)
+    {
+        if (a == null || b == null) return false;
+        if (a.Width != b.Width || a.Height != b.Height) return false;
+        int w = a.Width;
+        int h = a.Height;
+        int[] rows = new int[] { 0, h / 4, h / 2, 3 * h / 4, h - 1 };
+        for (int r = 0; r < rows.Length; r++)
+        {
+            int y = rows[r];
+            for (int x = 0; x < w; x += Math.Max(1, w / 16))
+            {
+                if (a.GetPixel(x, y) != b.GetPixel(x, y)) return false;
+            }
+        }
+        return true;
+    }
+
+    const int MaxLongFrames = 200;
+    const int MaxCanvasHeight = 30000;
+    int lastWheelTick = 0;
+    internal int minLongShotHeight = 0;
+
+    internal void DisposeLongFrames()
+    {
+        // R21-1: longComposed belongs here too. "长截图 → 确定/另存 → 关窗" used to leave
+        // the stitched canvas (up to MaxCanvasHeight x width) alive until process exit in
+        // the warm process. Idempotent: null checks make repeated calls no-ops.
+        if (longComposed != null) { longComposed.Dispose(); longComposed = null; }
+        for (int i = 0; i < longFrames.Count; i++)
+        {
+            if (longFrames[i] != null) longFrames[i].Dispose();
+        }
+        longFrames.Clear();
+        longOffsets.Clear();
+        if (lastSample != null) { lastSample.Dispose(); lastSample = null; }
+    }
+
+    internal void StartLongShotCapture()
+    {
+        isLongCapturing = true;
+
+        // 1. Punch out the selection region so the underlying application shows through!
+        var rgn = new Region(new Rectangle(0, 0, Width, Height));
+        rgn.Exclude(sel);
+        Region = rgn;
+
+        // 2. Clear previous frames (DisposeLongFrames also releases longComposed, R21-1)
+        DisposeLongFrames();
+        minLongShotHeight = 0;
+
+        // 3. Capture initial frame directly from the screen
+        Bitmap f0 = new Bitmap(sel.Width, sel.Height);
+        using (var g = Graphics.FromImage(f0))
+        {
+            g.CopyFromScreen(origin.X + sel.X, origin.Y + sel.Y, 0, 0, sel.Size);
+        }
+        longFrames.Add(f0);
+        longOffsets.Add(0);   // cumulative-offsets contract: frame 0 sits at canvas y=0
+        longComposed = (Bitmap)f0.Clone();
+        lastSample = (Bitmap)f0.Clone();
+        stableCount = 0;
+
+        // 4. Setup preview (N-8: dynamic preview placement avoiding sel)
+        if (longPreview == null || longPreview.IsDisposed)
+            longPreview = new LongPreviewForm(this);
+
+        int prevW = longPreview.Width;
+        int px = sel.Right + 12;
+        if (px + prevW > Right) px = sel.Left - prevW - 12;
+        if (px < origin.X + 8) px = Math.Max(origin.X + 8, Right - prevW - 8);
+        int py = Math.Max(origin.Y + 20, sel.Top);
+        longPreview.Location = new Point(px, py);
+        longPreview.UpdatePreview(longComposed, longFrames.Count);
+        longPreview.Show(this);
+
+        // 5. Global keyboard hook
+        InstallKeyboardHook();
+
+        // 6. Start 90ms timer for stable-frame detection
+        if (longTimer == null)
+        {
+            longTimer = new System.Windows.Forms.Timer();
+            longTimer.Interval = 90;
+            longTimer.Tick += LongTimer_Tick;
+        }
+        longTimer.Start();
+    }
+
+    internal void LongTimer_Tick(object sender, EventArgs e)
+    {
+        if (!isLongCapturing || longFrames.Count == 0) return;
+
+        // N-7: Do not sample while wheel is actively spinning; wait for pause
+        if (Environment.TickCount - lastWheelTick < 120)
+        {
+            stableCount = 0;
+            return;
+        }
+
+        // N-6: Cap frames and canvas height to avoid OOM
+        if (longFrames.Count >= MaxLongFrames || (longComposed != null && longComposed.Height >= MaxCanvasHeight))
+        {
+            if (longTimer != null) longTimer.Stop();
+            if (longPreview != null && !longPreview.IsDisposed)
+                longPreview.SetWarning(Program.T("已达长截图最大上限，停止采集", "Max limit reached, capture stopped"));
+            return;
+        }
+
+        Bitmap currentSample = new Bitmap(sel.Width, sel.Height);
+        using (var g = Graphics.FromImage(currentSample))
+        {
+            g.CopyFromScreen(origin.X + sel.X, origin.Y + sel.Y, 0, 0, sel.Size);
+        }
+
+        if (wheelPending)
+        {
+            wheelPending = false;
+            // A wheel tick means the content DID move: sample immediately without the
+            // identical/stable gate so the frame is never swallowed by the beat logic.
+            AddFrameIfNew(currentSample);
+        }
+
+        bool identical = ImagesIdentical(lastSample, currentSample);
+        if (lastSample != null) lastSample.Dispose();
+        lastSample = currentSample;
+
+        if (identical)
+        {
+            stableCount++;
+            if (stableCount == 1) // First stable tick after change
+            {
+                AddFrameIfNew(currentSample);
+            }
+        }
+        else
+        {
+            stableCount = 0;
+        }
+        // currentSample ownership moved to lastSample right after capture; the next
+        // tick disposes it, so it must NOT be disposed here.
+    }
+
+    // Append currentSample as the next long-shot frame when it really adds content.
+    // Shared by the stable-frame path and the wheel path (N-7). Never takes ownership
+    // of currentSample: the frame is stored as a Clone and the caller keeps the
+    // sample as lastSample (the next tick disposes it).
+    internal bool AddFrameIfNew(Bitmap currentSample)
+    {
+        if (!isLongCapturing || longFrames.Count == 0) return false;
+        Bitmap lastFrame = longFrames[longFrames.Count - 1];
+        if (ImagesIdentical(lastFrame, currentSample))
+        {
+            lastFrameReject = "identical-to-last";
+            return false;
+        }
+        int overlap = LongShot.FindVerticalOverlap(lastFrame, currentSample, 10, sel.Height - 10);
+        if (overlap <= 10 || overlap >= sel.Height - 5)
+        {
+            lastFrameReject = "overlap=" + overlap;
+            try
+            {
+                if (lastRejectedSample != null) lastRejectedSample.Dispose();
+                lastRejectedSample = (Bitmap)currentSample.Clone();
+            }
+            catch (Exception) { }
+            return false;
+        }
+        // Cumulative-offsets contract (LongShot.Compose header, t16/F-13):
+        // frame i's canvas-y = previous frame's y + (frameHeight - overlap).
+        int newOffset = longOffsets[longOffsets.Count - 1] + (lastFrame.Height - overlap);
+        lastFrameReject = null;
+        longOffsets.Add(newOffset);
+        longFrames.Add((Bitmap)currentSample.Clone());
+        if (longComposed != null) longComposed.Dispose();
+        longComposed = LongShot.Compose(longFrames, longOffsets, sel.Width, newOffset + currentSample.Height);
+        if (longPreview != null && !longPreview.IsDisposed)
+            longPreview.UpdatePreview(longComposed, longFrames.Count);
+        return true;
+    }
+
+    internal void StepLongShot()
+    {
+        // Kept for programmatic triggers (e.g. tests)
+        LongTimer_Tick(null, EventArgs.Empty);
+    }
+
+    internal void FinishLongShot()
+    {
+        if (!isLongCapturing) return;
+        isLongCapturing = false;
+        if (longTimer != null) longTimer.Stop();
+        UninstallKeyboardHook();
+        if (longPreview != null && !longPreview.IsDisposed) longPreview.Hide();
+
+        // Restore overlay Region
+        Region = null;
+
+        if (longComposed != null)
+        {
+            minLongShotHeight = longComposed.Height;
+            if (longComposed.Height > sel.Height)
+            {
+                int newH = longComposed.Height;
+                int maxH = Math.Max(screen.Height, sel.Y + newH + 50);
+                if (maxH > screen.Height)
+                {
+                    Bitmap newScreen = new Bitmap(screen.Width, maxH);
+                    using (var g = Graphics.FromImage(newScreen))
+                    {
+                        g.DrawImage(screen, 0, 0);
+                    }
+                    screen.Dispose();
+                    screen = newScreen;
+                }
+                sel.Height = newH;
+            }
+            using (var g = Graphics.FromImage(screen))
+            {
+                g.DrawImage(longComposed, sel.X, sel.Y);
+            }
+            InitBlit();
+        }
+        // N-6: free the intermediate frame bitmaps. longComposed stays alive: the editor's
+        // RenderResult expansion path and any post-finish inspection still read it. The
+        // session-end paths (Cancel / OnFormClosed) release it via DisposeLongFrames (R21-1).
+        DisposeLongFramesOnly();
+        Invalidate();
+        ShowBar();
+    }
+
+    // Frames + lastSample only; longComposed untouched. Used by FinishLongShot where the
+    // stitched canvas remains the editor's source of truth.
+    internal void DisposeLongFramesOnly()
+    {
+        for (int i = 0; i < longFrames.Count; i++)
+        {
+            if (longFrames[i] != null) longFrames[i].Dispose();
+        }
+        longFrames.Clear();
+        longOffsets.Clear();
+        if (lastSample != null) { lastSample.Dispose(); lastSample = null; }
+    }
+
+    internal void CancelLongShot()
+    {
+        if (!isLongCapturing) return;
+        isLongCapturing = false;
+        if (longTimer != null) longTimer.Stop();
+        UninstallKeyboardHook();
+        if (longPreview != null && !longPreview.IsDisposed) longPreview.Hide();
+        if (topBar != null && !topBar.IsDisposed) topBar.Show();
+        DisposeLongFrames();
+        if (longComposed != null) { longComposed.Dispose(); longComposed = null; }
+        minLongShotHeight = 0;
     }
 
     // Save the framed area (with annotations) as a PNG the user picks.
@@ -1071,8 +1555,9 @@ public class SnipForm : Form
         if (!hasSel || sel.Width < 2 || sel.Height < 2) return;
         using (var dlg = new SaveFileDialog())
         {
-            dlg.Filter = "PNG 图片|*.png";
-            dlg.FileName = "截图-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".png";
+            dlg.Filter = Program.T("PNG 图片|*.png", "PNG image|*.png");
+            dlg.FileName = Program.T("截图-", "screenshot-") +
+                DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".png";
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
             try
             {
@@ -1116,6 +1601,9 @@ public class SnipForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         closing = true;
+        // A session that ends without "done" leaves nothing to fetch: tell the web half,
+        // otherwise its button stays disabled until the poll timer gives up.
+        if (!confirmed) Program.WriteState("cancel");
         Program.TLog("close: editor");
         if (editor != null)
         {
@@ -1123,6 +1611,10 @@ public class SnipForm : Form
             editor = null;
         }
         UninstallMouseHook();
+        UninstallKeyboardHook();
+        if (longTimer != null) { longTimer.Stop(); longTimer.Dispose(); longTimer = null; }
+        DisposeLongFrames();
+        if (screen != null) { screen.Dispose(); screen = null; }
         Program.TLog("close: hook done");
         if (Perf)
         {
@@ -1141,7 +1633,14 @@ public class SnipForm : Form
             catch (Exception) { }
         }
         if (hideDsh && dshWnd != IntPtr.Zero) Program.ShowWindow(dshWnd, 9);
+        else if (hideDsh && dshWnd == IntPtr.Zero)
+        {
+            // N-4: same diagnosability on the cancel/close restore path.
+            Program.LogCrash("OnFormClosed: no DSH window handle, restore skipped (parentPid=" + Program.ParentPid + ")");
+        }
         Program.TLog("close: bar");
+        if (topBar != null && !topBar.IsDisposed) { topBar.Close(); topBar = null; }
+        if (longPreview != null && !longPreview.IsDisposed) { longPreview.Close(); longPreview = null; }
         if (bar != null) { bar.Hide(); bar.Close(); }
         Program.TLog("close: bar done");
         Program.TLog("close: gdi");
@@ -1272,53 +1771,22 @@ public class SnipForm : Form
 
     void UpdateHover(Point p)
     {
-        IntPtr h = GetWindow(Handle, 2);
-        while (h != IntPtr.Zero)
+        Point screenPt = new Point(p.X + origin.X, p.Y + origin.Y);
+        TargetHit hit = Detect.HitTest(screenPt, MyPid);
+        if (hit != null && !hit.IsEmpty)
         {
-            if (IsWindowVisible(h))
+            Rectangle r = hit.Rect.ToRectangle();
+            Rectangle clientRect = new Rectangle(r.X - origin.X, r.Y - origin.Y, r.Width, r.Height);
+            clientRect.Intersect(new Rectangle(0, 0, ClientSize.Width, ClientSize.Height));
+            if (clientRect.Width > 0 && clientRect.Height > 0)
             {
-                uint pid;
-                GetWindowThreadProcessId(h, out pid);
-                if (pid == (uint)MyPid) { h = GetWindow(h, 2); continue; }
-                if ((GetWindowLong(h, -20) & 0x20) != 0) { h = GetWindow(h, 2); continue; }
-                int cloaked;
-                if (DwmGetWindowAttribute(h, 14, out cloaked, 4) == 0 && cloaked != 0) { h = GetWindow(h, 2); continue; }
-                RECT r;
-                if (GetWindowRect(h, out r) && r.Right > r.Left && r.Bottom > r.Top)
-                {
-                    if (p.X >= r.Left - origin.X && p.X < r.Right - origin.X && p.Y >= r.Top - origin.Y && p.Y < r.Bottom - origin.Y)
-                    {
-                        hoverClass.Length = 0;
-                        GetClassName(h, hoverClass, 256);
-                        string cls = hoverClass.ToString();
-                        if (cls != "Progman" && cls != "WorkerW")
-                        {
-                            IntPtr root = GetAncestor(h, 2);
-                            if (root != IntPtr.Zero && root != Handle)
-                            {
-                                RECT rr = new RECT();
-                                int dwm = DwmGetWindowAttribute(root, 9, out rr, Marshal.SizeOf(typeof(RECT)));
-                                if (dwm != 0 && !GetWindowRect(root, out rr))
-                                {
-                                    h = GetWindow(h, 2);
-                                    continue;
-                                }
-                                var rect = Rectangle.FromLTRB(rr.Left - origin.X, rr.Top - origin.Y, rr.Right - origin.X, rr.Bottom - origin.Y);
-                                rect.Intersect(new Rectangle(0, 0, ClientSize.Width, ClientSize.Height));
-                                if (rect.Width > 0 && rect.Height > 0)
-                                {
-                                    hoverRect = rect;
-                                    hasHover = true;
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                }
+                hoverRect = clientRect;
+                hasHover = true;
+                return;
             }
-            h = GetWindow(h, 2);
         }
-        hoverRect = new Rectangle(0, 0, ClientSize.Width, ClientSize.Height);
+        Rectangle scr = Screen.FromPoint(screenPt).Bounds;
+        hoverRect = new Rectangle(scr.X - origin.X, scr.Y - origin.Y, scr.Width, scr.Height);
         hasHover = true;
     }
 
@@ -1586,8 +2054,12 @@ public class SnipForm : Form
         {
             var old = sel;
             int dx = e.X - dragStart.X, dy = e.Y - dragStart.Y;
-            int x = Math.Max(0, Math.Min(ClientSize.Width - selStart.Width, selStart.X + dx));
-            int y = Math.Max(0, Math.Min(ClientSize.Height - selStart.Height, selStart.Y + dy));
+            int maxX = Math.Max(0, ClientSize.Width - selStart.Width);
+            int maxY = (minLongShotHeight > 0 || longComposed != null)
+                ? Math.Max(0, screen.Height - selStart.Height)
+                : Math.Max(0, ClientSize.Height - selStart.Height);
+            int x = Math.Max(0, Math.Min(maxX, selStart.X + dx));
+            int y = Math.Max(0, Math.Min(maxY, selStart.Y + dy));
             // Same containment rule as resizing, applied to moving: the frame owns what
             // it contains, so it can only slide as far as the annotations stay inside it.
             // The frame stops as soon as one of its edges reaches an annotation.
@@ -1626,11 +2098,19 @@ public class SnipForm : Form
                 r = Math.Max(r, inside.Right);
                 b = Math.Max(b, inside.Bottom);
             }
+            int effectiveMinH = Math.Max(minLongShotHeight, (longComposed != null ? longComposed.Height : 0));
+            int maxBottom = (effectiveMinH > 0)
+                ? Math.Max(screen.Height, t + effectiveMinH)
+                : ClientSize.Height;
+            int bottomClamped = Math.Min(maxBottom, Math.Max(b, t + 6));
             sel = Rectangle.FromLTRB(
                 Math.Max(0, Math.Min(l, r - 6)), Math.Max(0, Math.Min(t, b - 6)),
-                Math.Min(ClientSize.Width, Math.Max(r, l + 6)), Math.Min(ClientSize.Height, Math.Max(b, t + 6)));
-            // The toolbar is hidden while resizing; repositioning it (and rebuilding
-            // its window region) every mouse move was pure overhead.
+                Math.Min(ClientSize.Width, Math.Max(r, l + 6)), bottomClamped);
+            // N-1: During long screenshot session, lock sel.Height lower bound to effectiveMinH
+            if (effectiveMinH > 0 && sel.Height < effectiveMinH)
+            {
+                sel.Height = effectiveMinH;
+            }
             InvalidateChrome(paintedSel, sel);
             return;
         }
@@ -1653,8 +2133,6 @@ public class SnipForm : Form
             if (activeAnno.Tool == "rect" || activeAnno.Tool == "ellipse") ReshapeRect(activeAnno, activeEnd, e.Location);
             else
             {
-                // activeEnd is a handle index (0 = start, 1 = end), not a point index:
-                // a freehand stroke has many points and only the ends are draggable.
                 int pi = activeEnd == 0 ? 0 : activeAnno.Points.Count - 1;
                 activeAnno.Points[pi] = e.Location;
             }
@@ -2135,10 +2613,36 @@ public class SnipForm : Form
         Invalidate();
     }
 
+    // N-7: the wheel and the 90ms timer both used to call LongTimer_Tick, and every
+    // call replaced lastSample -- so a wheel tick reset the "stable for one beat"
+    // window mid-motion and frames were missed or double-counted. The wheel now only
+    // marks the need for a sample; the timer is the single sampler.
+    internal volatile bool wheelPending;
+    internal string lastFrameReject;
+    internal Bitmap lastRejectedSample;
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        base.OnMouseWheel(e);
+        if (isLongCapturing && sel.Contains(e.Location))
+        {
+            if (e.Delta < 0)
+            {
+                wheelPending = true;
+                stableCount = 0;
+                lastWheelTick = Environment.TickCount;
+            }
+        }
+    }
+
     protected override void OnKeyDown(KeyEventArgs e)
     {
         if (IsDisposed || Disposing) return;   // messages can still arrive after Dispose
         base.OnKeyDown(e);
+        if (isLongCapturing)
+        {
+            if (e.KeyCode == Keys.Enter) { FinishLongShot(); e.Handled = true; e.SuppressKeyPress = true; return; }
+            if (e.KeyCode == Keys.Escape) { CancelLongShot(); e.Handled = true; e.SuppressKeyPress = true; return; }
+        }
         // While the text box is open it owns Enter and Escape: Enter commits the text
         // and Escape cancels it. Without this, KeyPreview let the form capture the
         // whole screenshot on Enter and throw the selection away on Escape.
@@ -2172,6 +2676,11 @@ public class SnipForm : Form
     public bool HandleShortcut(Keys key, bool control)
     {
         if (closing || IsDisposed) return false;
+        if (isLongCapturing)
+        {
+            if (key == Keys.Enter) { FinishLongShot(); return true; }
+            if (key == Keys.Escape) { CancelLongShot(); return true; }
+        }
         if (textBox != null && textBox.Visible)
         {
             if (key == Keys.Enter) { CommitText(); return true; }
@@ -2186,33 +2695,6 @@ public class SnipForm : Form
         }
         if (key == Keys.Escape) { Close(); return true; }
         if (control && key == Keys.Z) { UndoLast(); return true; }
-        if (false)
-        {
-            if (undoSteps.Count > 0)
-            {
-                var step = undoSteps[undoSteps.Count - 1];
-                undoSteps.RemoveAt(undoSteps.Count - 1);
-                if (step.Points == null)
-                {
-                    annos.Remove(step.Anno);
-                    if (activeAnno == step.Anno) { activeAnno = null; activeEnd = -1; }
-                }
-                else
-                {
-                    step.Anno.Points.Clear();
-                    step.Anno.Points.AddRange(step.Points);
-                }
-            }
-            else if (annos.Count > 0)
-            {
-                // Fallback for shapes drawn before this history existed.
-                annos.RemoveAt(annos.Count - 1);
-                activeAnno = null;
-                activeEnd = -1;
-            }
-            Invalidate();
-            return true;
-        }
         // The card says "press C", so the bare key must work too (Ctrl+C still does).
         if (!control && key == Keys.C && !hasSel && screen != null && editor == null)
         {
@@ -2232,8 +2714,26 @@ public class SnipForm : Form
         return false;
     }
 
-    Bitmap RenderResult()
+    internal Bitmap RenderResult()
     {
+        int effectiveMinH = Math.Max(minLongShotHeight, (longComposed != null ? longComposed.Height : 0));
+        if (effectiveMinH > 0 && sel.Height < effectiveMinH)
+        {
+            sel.Height = effectiveMinH;
+        }
+
+        if (sel.Bottom > screen.Height)
+        {
+            Bitmap expanded = new Bitmap(screen.Width, sel.Bottom);
+            using (var g = Graphics.FromImage(expanded))
+            {
+                g.DrawImage(screen, 0, 0);
+                if (longComposed != null) g.DrawImage(longComposed, sel.X, sel.Y);
+            }
+            screen.Dispose();
+            screen = expanded;
+        }
+
         var bmp = new Bitmap(sel.Width, sel.Height);
         using (var g = Graphics.FromImage(bmp))
         {
@@ -2243,27 +2743,40 @@ public class SnipForm : Form
         }
         return bmp;
     }
-
     void CopyAndClose()
     {
         if (closing || IsDisposed) return;
         if (!hasSel || sel.Width < 2 || sel.Height < 2) return;
         try
         {
+            bool saved = false;
             using (var bmp = RenderResult())
             {
                 Clipboard.SetImage(bmp);
-                // Also leave a copy on disk: the web UI picks it up and pastes it into
-                // the composer, so the user never has to press Ctrl+V.
                 try
                 {
-                    bmp.Save(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "dsh-snip-last.png"),
-                        System.Drawing.Imaging.ImageFormat.Png);
+                    if (!System.IO.Directory.Exists(Program.OutDir))
+                        System.IO.Directory.CreateDirectory(Program.OutDir);
+                    bmp.Save(Program.ResultFile, System.Drawing.Imaging.ImageFormat.Png);
+                    saved = true;
                 }
                 catch (Exception) { }
             }
+            confirmed = true;
+            if (saved)
+            {
+                Program.WriteState("ok");
+            }
+            else
+            {
+                Program.WriteState("error", "Failed to save screenshot image to disk.");
+                try { MessageBox.Show(Program.T("截图保存失败，请检查磁盘空间或写入权限。", "Failed to save screenshot. Check disk space or write permissions.")); } catch (Exception) { }
+            }
             Close();
-            PasteIntoDsh();
+            // --client: the web half fetches the PNG and pastes it itself, so pressing
+            // Ctrl+V here as well would drop a second copy into the composer.
+            if (Program.ClientDelivers) BringDshForward();
+            else PasteIntoDsh();
         }
         catch (Exception)
         {
@@ -2272,6 +2785,25 @@ public class SnipForm : Form
     }
 
     [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
+
+    // --client variant of PasteIntoDsh: restore and focus DSH, but never type into it.
+    void BringDshForward()
+    {
+        try
+        {
+            if (dshWnd == IntPtr.Zero) FindDsh();
+            if (dshWnd == IntPtr.Zero)
+            {
+                // N-4: restoring is part of the R5 promise; a silent skip here leaves the
+                // user's DSH minimised with no trace. Log it at least.
+                Program.LogCrash("BringDshForward: no DSH window found (parentPid=" + Program.ParentPid + "), restore skipped");
+                return;
+            }
+            Program.ShowWindow(dshWnd, 9);
+            SetForegroundWindow(dshWnd);
+        }
+        catch (Exception) { }
+    }
 
     // After "done" the image is already on the clipboard; bring DSH forward and press
     // Ctrl+V so it lands in the composer exactly like a manual paste.
@@ -2400,10 +2932,17 @@ public class SnipForm : Form
                     g.DrawString(s, f, w, p.X - sz.Width / 2, p.Y - sz.Height / 2);
                 }
             }
+            else if (a.Tool == "mosaic" && pts.Count > 0)
+            {
+                Rectangle mr = pts.Count > 1 ? Normalize(pts[0], pts[pts.Count - 1]) : new Rectangle(pts[0].X - 16, pts[0].Y - 16, 32, 32);
+                if (mr.Width > 0 && mr.Height > 0 && screen != null)
+                {
+                    int blockSize = Math.Max(4, a.Width > 0 ? a.Width : 10);
+                    ApplyMosaic(g, screen, mr, blockSize);
+                }
+            }
         }
     }
-
-    // ---- GDI rendering core -------------------------------------------------
     // The overlay paints straight into window DCs: a dimmed copy of the screen, the
     // bright selection area from the original, then the frame, handles and label.
     [DllImport("gdi32.dll")] static extern bool BitBlt(IntPtr dst, int x, int y, int w, int h, IntPtr src, int sx, int sy, int rop);
@@ -2421,8 +2960,8 @@ public class SnipForm : Form
     [DllImport("gdi32.dll")] static extern uint SetTextColor(IntPtr hdc, int color);
     [DllImport("gdi32.dll")] static extern int SetBkMode(IntPtr hdc, int mode);
 
-    const int SRCCOPY = 0x00CC0020, NULL_BRUSH = 5, NULL_PEN = 8;
-    const int DT_LEFT = 0, DT_VCENTER = 4, DT_SINGLELINE = 0x20, DT_NOPREFIX = 0x800;
+    const int SRCCOPY = 0x00CC0020, NULL_BRUSH = 5, NULL_PEN = 8, WHITE_BRUSH = 0;
+    const int DT_LEFT = 0, DT_CENTER = 1, DT_VCENTER = 4, DT_SINGLELINE = 0x20, DT_NOPREFIX = 0x800;
 
     IntPtr hdcScreen, hdcDimmed, hdcBuf;
     IntPtr bmpScreen, bmpDim, bmpBuf, oldScreen, oldDim, oldBuf;
@@ -2440,7 +2979,7 @@ public class SnipForm : Form
     {
         int dpi = 96;
         try { using (var g = CreateGraphics()) dpi = (int)Math.Round(g.DpiY); } catch (Exception) { }
-        int height = -(int)Math.Round(11.0 * dpi / 72.0);
+        int height = -(int)Math.Round(6.5 * dpi / 72.0);
         penFrame = CreatePen(0, Math.Max(3, 3 * dpi / 96), Rgb(Program.Accent));
         penHair = CreatePen(0, Math.Max(1, dpi / 96), Rgb(Color.FromArgb(150, Program.Accent)));
         brushAccent = CreateSolidBrush(Rgb(Program.Accent));
@@ -2451,6 +2990,7 @@ public class SnipForm : Form
     void InitBlit()
     {
         if (screen == null) return;
+        DisposeBlit();
         dimmed = new Bitmap(screen.Width, screen.Height);
         using (var g = Graphics.FromImage(dimmed))
         {
@@ -2504,18 +3044,25 @@ public class SnipForm : Form
     void DrawSizeLabel(IntPtr hdc, Rectangle r)
     {
         if (fontLabel == IntPtr.Zero) return;
-        string text = r.Width + " \u00d7 " + r.Height;
-        int w = Math.Max(200, r.Width + 20);
-        int y = r.Top - 40;
-        if (y < 0) y = r.Top + 2;
-        var rc = new RECT { Left = r.Left, Top = y, Right = r.Left + w, Bottom = y + 34 };
+        string text = r.Width + " × " + r.Height;
+        int badgeW = Math.Max(38, (int)Math.Round(text.Length * 4.5) + 9);
+        int badgeH = 12;
+        int y = r.Top - badgeH - 3;
+        if (y < 2) y = r.Top + 2;
+        int x = r.Left;
+        if (x + badgeW > ClientSize.Width) x = ClientSize.Width - badgeW - 2;
+
+        var oldPen = SelectObject(hdc, penHair != IntPtr.Zero ? penHair : GetStockObject(NULL_PEN));
+        var oldBrush = SelectObject(hdc, brushWhite != IntPtr.Zero ? brushWhite : GetStockObject(WHITE_BRUSH));
+        GdiRect(hdc, x, y, x + badgeW, y + badgeH);
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+
+        var rc = new RECT { Left = x, Top = y, Right = x + badgeW, Bottom = y + badgeH };
         var old = SelectObject(hdc, fontLabel);
         SetBkMode(hdc, 1);
-        SetTextColor(hdc, 0x1A1A1A);
-        var shadow = rc; shadow.Left += 2; shadow.Top += 2; shadow.Right += 2; shadow.Bottom += 2;
-        DrawTextW(hdc, text, -1, ref shadow, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        SetTextColor(hdc, 0xFFFFFF);
-        DrawTextW(hdc, text, -1, ref rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SetTextColor(hdc, 0x222222);
+        DrawTextW(hdc, text, -1, ref rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         SelectObject(hdc, old);
     }
 
@@ -2766,7 +3313,7 @@ public class TextEditorForm : Form
         Layout();
     }
 
-    void Layout()
+    new void Layout()
     {
         // IME composition never reaches TextBox.Text until it is committed, so the
         // box used to stay at its initial width while the user typed: the string
@@ -3007,9 +3554,9 @@ public class ToolBarStrip : Control
     public Size NaturalSize;
     public Color Back, Border, Fore, Accent, Hover, Chip, Divider;
 
-    const int ItemSize = 54, Gap = 4, PadX = 12, PadY = 8;
+    const int ItemSize = 27, Gap = 2, PadX = 6, PadY = 4;
     // One divider between the tools and the actions (after the text item).
-    const int SepAfter = 5, SepGap = 20;
+    const int SepAfter = 5, SepGap = 10;
 
     public ToolBarStrip()
     {
@@ -3027,7 +3574,10 @@ public class ToolBarStrip : Control
     public void Add(string name, string tip, Action click, Action<Graphics, Rectangle, Color> paint)
     {
         items.Add(new Item { Name = name, Tip = tip, Click = click, Paint = paint });
-        Width = PadX * 2 + items.Count * (ItemSize + Gap) - Gap + (items.Count > SepAfter ? SepGap : 0);
+        int extra = 0;
+        if (items.Count > 6) extra += SepGap;
+        if (items.Count > 7) extra += SepGap;
+        Width = PadX * 2 + items.Count * (ItemSize + Gap) - Gap + extra;
         Height = PadY * 2 + ItemSize;
         NaturalSize = Size;
         RefreshRegion();
@@ -3036,7 +3586,7 @@ public class ToolBarStrip : Control
     public void RefreshRegion()
     {
         if (Width <= 0 || Height <= 0) return;
-        using (var path = Rounded(new Rectangle(0, 0, Width, Height), 12))
+        using (var path = Rounded(new Rectangle(0, 0, Width, Height), 6))
         {
             var old = Region;
             Region = new Region(path);
@@ -3097,7 +3647,7 @@ public class ToolBarStrip : Control
         set { if (showFill == value) return; showFill = value; Invalidate(); }
     }
     public Action PenChanged;
-    public const int OptionHeight = 56;
+    public const int OptionHeight = 28;
     static readonly int[] PenSizes = { 2, 5, 10 };
     // The fourth chip is "solid": same row as the three widths, not a separate button.
     const int SolidIndex = 3;
@@ -3125,17 +3675,17 @@ public class ToolBarStrip : Control
         float cy = BaseHeight + OptionHeight / 2f;
         if (i == SolidIndex)
         {
-            float scx = PadX + 16 + SolidIndex * 30;
-            return new RectangleF(scx - 11f, cy - 11f, 22f, 22f);
+            float scx = PadX + 8 + SolidIndex * 15;
+            return new RectangleF(scx - 5.5f, cy - 5.5f, 11f, 11f);
         }
         // Drawn a little larger than the actual stroke width so the three are readable.
-        float d = PenSizes[i] + 4f, cx = PadX + 16 + i * 30;
+        float d = Math.Max(2f, (PenSizes[i] + 4f) * 0.5f), cx = PadX + 8 + i * 15;
         return new RectangleF(cx - d / 2f, cy - d / 2f, d, d);
     }
 
     Rectangle SwatchRect(int i)
     {
-        return new Rectangle(SwatchX + i * 28, BaseHeight + (OptionHeight - 22) / 2, 22, 22);
+        return new Rectangle(SwatchX + i * 14, BaseHeight + (OptionHeight - 11) / 2, 11, 11);
     }
 
     void PaintOptions(Graphics g)
@@ -3184,16 +3734,19 @@ public class ToolBarStrip : Control
     // Fourth option: solid fill, sitting between the sizes and the colours.
     Rectangle FillRect()
     {
-        return new Rectangle(PadX + 88, BaseHeight + (OptionHeight - 22) / 2, 22, 22);
+        return new Rectangle(PadX + 44, BaseHeight + (OptionHeight - 11) / 2, 11, 11);
     }
 
     // Centred: the same gap on the chip side and on the swatch side.
-    float DividerX { get { return PadX + (ShowFill ? 143 : 105); } }
-    int SwatchX { get { return PadX + (ShowFill ? 169 : 129); } }
+    float DividerX { get { return PadX + (ShowFill ? 72 : 53); } }
+    int SwatchX { get { return PadX + (ShowFill ? 85 : 65); } }
 
     Rectangle Box(int i)
     {
-        return new Rectangle(PadX + i * (ItemSize + Gap) + (i > SepAfter ? SepGap : 0), PadY, ItemSize, ItemSize);
+        int extra = 0;
+        if (i > 5) extra += SepGap;
+        if (i > 6) extra += SepGap;
+        return new Rectangle(PadX + i * (ItemSize + Gap) + extra, PadY, ItemSize, ItemSize);
     }
 
     int IndexAt(Point p)
@@ -3212,15 +3765,21 @@ public class ToolBarStrip : Control
     {
         g.SmoothingMode = SmoothingMode.AntiAlias;
         Icons.UndoEnabled = CanUndo == null || CanUndo();
-        using (var path = Rounded(new Rectangle(0, 0, Width, Height), 12))
+        using (var path = Rounded(new Rectangle(0, 0, Width, Height), 6))
         using (var b = new SolidBrush(Back))
             g.FillPath(b, path);
 
-        if (items.Count > SepAfter + 1)
+        if (items.Count > 6)
         {
-            int sepX = PadX + (SepAfter + 1) * (ItemSize + Gap) - Gap + SepGap / 2;
-            using (var pen = new Pen(Divider, 1.4f))
-                g.DrawLine(pen, sepX, PadY + 11, sepX, PadY + ItemSize - 11);
+            int sepX1 = (Box(5).Right + Box(6).X) / 2;
+            using (var pen = new Pen(Divider, 1.2f))
+                g.DrawLine(pen, sepX1, PadY + 5, sepX1, PadY + ItemSize - 5);
+        }
+        if (items.Count > 7)
+        {
+            int sepX2 = (Box(6).Right + Box(7).X) / 2;
+            using (var pen = new Pen(Divider, 1.2f))
+                g.DrawLine(pen, sepX2, PadY + 5, sepX2, PadY + ItemSize - 5);
         }
 
         for (int i = 0; i < items.Count; i++)
@@ -3229,7 +3788,7 @@ public class ToolBarStrip : Control
             bool selected = items[i].Name == Selected;
             if (selected || i == hover)
             {
-                using (var path = Rounded(box, 8))
+                using (var path = Rounded(box, 4))
                 using (var b = new SolidBrush(selected ? Chip : Hover))
                     g.FillPath(b, path);
             }
@@ -3239,8 +3798,8 @@ public class ToolBarStrip : Control
         if (ShowOptions) PaintOptions(g);
 
         // Inset by a pixel: on the edge the layered alpha falloff swallowed the line.
-        using (var path = Rounded(new RectangleF(0.8f, 0.8f, Width - 1.6f, Height - 1.6f), 11.5f))
-        using (var pen = new Pen(Border, 1.6f))
+        using (var path = Rounded(new RectangleF(0.6f, 0.6f, Width - 1.2f, Height - 1.2f), 5.5f))
+        using (var pen = new Pen(Border, 1.2f))
             g.DrawPath(pen, path);
     }
 
@@ -3460,16 +4019,8 @@ public class ToolBarForm : Form
     public void RefreshRegion()
     {
         // Deliberately empty: the shape comes from the layered bitmap's alpha channel.
-        if (true) return;
-        if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
-        // Same radius as the strip paints: a different one exposed the form background
-        // as dark specks in the four corners.
-        using (var path = ToolBarStrip.Rounded(new Rectangle(0, 0, ClientSize.Width, ClientSize.Height), 12))
-        {
-            var old = Region;
-            Region = new Region(path);
-            if (old != null) old.Dispose();
-        }
+        // The former Region-based path was dead code (guarded by an always-true return)
+        // and kept two CS0162 warnings alive; it was removed in T14 (F-8).
     }
 }
 
@@ -3491,10 +4042,10 @@ public static class Icons
         return (g, box, color) =>
         {
             var state = g.Save();
-            // Painters use a 22-unit grid; scale it up so the bigger bar keeps the
-            // same proportions and every existing icon grows with it.
-            float canvas = Math.Max(26f, box.Height * 0.70f);
-        const float unit = 22f;
+            // Painters use a 22-unit grid; scale it relative to box.Height so the icons
+            // maintain proportions at any bar scale without clipping.
+            float canvas = box.Height * 0.70f;
+            const float unit = 22f;
             g.TranslateTransform(box.Left + (box.Width - canvas) / 2f, box.Top + (box.Height - canvas) / 2f);
             g.ScaleTransform(canvas / unit, canvas / unit);
             draw(g, color);
@@ -3850,6 +4401,7 @@ public class LoupeForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         try { follow.Stop(); follow.Dispose(); } catch (Exception) { }
+        if (wallpaper != null) { wallpaper.Dispose(); wallpaper = null; }
         base.OnFormClosed(e);
     }
 
@@ -3970,18 +4522,262 @@ public class LoupeForm : Form
     }
 }
 
+public class Settings
+{
+    public bool HideDsh = true;
+    public bool LongShot = false;
 
+    public static string SettingsPath
+    {
+        get
+        {
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            return System.IO.Path.Combine(System.IO.Path.Combine(local, "dsh-screenshot"), "settings.json");
+        }
+    }
 
+    public static Settings Load()
+    {
+        var s = new Settings();
+        try
+        {
+            string p = SettingsPath;
+            if (System.IO.File.Exists(p))
+            {
+                string json = System.IO.File.ReadAllText(p);
+                if (json.Contains("\"hideDsh\": false") || json.Contains("\"hideDsh\":false"))
+                    s.HideDsh = false;
+                else if (json.Contains("\"hideDsh\": true") || json.Contains("\"hideDsh\":true"))
+                    s.HideDsh = true;
+                if (json.Contains("\"longShot\": true") || json.Contains("\"longShot\":true"))
+                    s.LongShot = true;
+                else if (json.Contains("\"longShot\": false") || json.Contains("\"longShot\":false"))
+                    s.LongShot = false;
+            }
+        }
+        catch (Exception) { }
+        return s;
+    }
 
+    public void Save()
+    {
+        try
+        {
+            string p = SettingsPath;
+            string dir = System.IO.Path.GetDirectoryName(p);
+            if (!System.IO.Directory.Exists(dir))
+                System.IO.Directory.CreateDirectory(dir);
+            string json = "{\n  \"hideDsh\": " + (HideDsh ? "true" : "false") + ",\n  \"longShot\": " + (LongShot ? "true" : "false") + "\n}\n";
+            System.IO.File.WriteAllText(p, json);
+        }
+        catch (Exception) { }
+    }
+}
 
+public class TopBarForm : Form
+{
+    readonly SnipForm ownerForm;
+    readonly Settings settings;
+    readonly CheckBox chkHide;
+    readonly CheckBox chkLong;
 
+    public TopBarForm(SnipForm owner, Settings st)
+    {
+        ownerForm = owner;
+        settings = st != null ? st : new Settings();
 
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
+        TopMost = true;
+        Size = new Size(260, 36);
+        BackColor = Color.FromArgb(35, 39, 46);
 
+        chkHide = new CheckBox();
+        chkHide.Text = Program.T("隐藏 DSH 窗口", "Hide DSH window");
+        chkHide.ForeColor = Color.White;
+        chkHide.Font = new Font("Microsoft YaHei UI", 9F);
+        chkHide.AutoSize = true;
+        chkHide.Checked = settings.HideDsh;
+        chkHide.CheckedChanged += new EventHandler(OnHideChanged);
+        Controls.Add(chkHide);
 
+        chkLong = new CheckBox();
+        chkLong.Text = Program.T("长截图", "Long screenshot");
+        chkLong.ForeColor = Color.White;
+        chkLong.Font = new Font("Microsoft YaHei UI", 9F);
+        chkLong.AutoSize = true;
+        chkLong.Checked = settings.LongShot;
+        chkLong.CheckedChanged += new EventHandler(OnLongChanged);
+        Controls.Add(chkLong);
 
+        // Lay the row out from the measured text: the English labels are roughly twice as
+        // wide and were clipped by a hard-coded 260 px window.
+        chkHide.Location = new Point(14, 8);
+        chkLong.Location = new Point(chkHide.Left + chkHide.PreferredSize.Width + 18, 8);
+        Size = new Size(chkLong.Left + chkLong.PreferredSize.Width + 14, 36);
+    }
 
+    void OnHideChanged(object sender, EventArgs e)
+    {
+        settings.HideDsh = chkHide.Checked;
+        settings.Save();
+        if (ownerForm != null)
+            ownerForm.SetHideDsh(chkHide.Checked);
+    }
 
+    void OnLongChanged(object sender, EventArgs e)
+    {
+        settings.LongShot = chkLong.Checked;
+        settings.Save();
+        if (ownerForm != null)
+            ownerForm.SetLongShotMode(chkLong.Checked);
+    }
 
+    public void PositionAt(Point origin, Size screenSize)
+    {
+        int x = origin.X + (screenSize.Width - Width) / 2;
+        int y = origin.Y + 12;
+        Location = new Point(x, y);
+    }
+
+    protected override bool ShowWithoutActivation
+    {
+        get { return true; }
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            CreateParams cp = base.CreateParams;
+            cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
+            cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW
+            return cp;
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        using (var pen = new Pen(Color.FromArgb(65, 118, 230), 2))
+        {
+            e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+        }
+    }
+}
+
+public class LongPreviewForm : Form
+{
+    readonly SnipForm ownerForm;
+    Bitmap previewBmp;
+    int frameCount;
+
+    public LongPreviewForm(SnipForm owner)
+    {
+        ownerForm = owner;
+        FormBorderStyle = FormBorderStyle.None;
+        ShowInTaskbar = false;
+        StartPosition = FormStartPosition.Manual;
+        TopMost = true;
+        // 190 px is the floor: the English captions are ~30% longer than the Chinese ones,
+        // so the width is measured from both locales instead of trusting the floor (R28).
+        int panelW = 190;
+        using (var f9 = new Font("Microsoft YaHei UI", 9F))
+        using (var f8 = new Font("Microsoft YaHei UI", 8F))
+        {
+            panelW = Math.Max(panelW, TextRenderer.MeasureText("长截图预览 (3帧)", f9).Width + 20);
+            panelW = Math.Max(panelW, TextRenderer.MeasureText("Long screenshot (3 frames)", f9).Width + 20);
+            panelW = Math.Max(panelW, TextRenderer.MeasureText("滚轮继续 | Enter确定 | Esc取消", f8).Width + 16);
+            panelW = Math.Max(panelW, TextRenderer.MeasureText("Scroll · Enter done · Esc cancel", f8).Width + 16);
+        }
+        Size = new Size(panelW, 430);
+        BackColor = Color.FromArgb(28, 32, 38);
+        DoubleBuffered = true;
+    }
+
+    // N-6: surface "capture stopped at max frames/canvas height" inside the preview.
+    string warning;
+    public void SetWarning(string text)
+    {
+        warning = text;
+        Invalidate();
+    }
+
+    public void UpdatePreview(Bitmap full, int frames)
+    {
+        frameCount = frames;
+        if (full != null)
+        {
+            Size psize = LongShot.PreviewSize(full.Width, full.Height, 140, 340);
+            if (previewBmp != null) previewBmp.Dispose();
+            previewBmp = new Bitmap(psize.Width, psize.Height);
+            using (var g = Graphics.FromImage(previewBmp))
+            {
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.DrawImage(full, new Rectangle(0, 0, psize.Width, psize.Height), new Rectangle(0, 0, full.Width, full.Height), GraphicsUnit.Pixel);
+            }
+        }
+        Invalidate();
+    }
+
+    protected override bool ShowWithoutActivation
+    {
+        get { return true; }
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            CreateParams cp = base.CreateParams;
+            cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
+            cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW
+            return cp;
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        var g = e.Graphics;
+        using (var pen = new Pen(Color.FromArgb(65, 118, 230), 2))
+        {
+            g.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+        }
+        using (var b = new SolidBrush(Color.White))
+        using (var f = new Font("Microsoft YaHei UI", 9F))
+        {
+            g.DrawString(Program.T("长截图预览 (", "Long screenshot (") + frameCount +
+                Program.T("帧)", " frames)"), f, b, 10, 10);
+            using (var fb = new Font("Microsoft YaHei UI", 8F))
+            {
+                if (!string.IsNullOrEmpty(warning))
+                {
+                    g.DrawString(warning, fb, Brushes.OrangeRed, 8, Height - 40);
+                }
+                g.DrawString(Program.T("滚轮继续 | Enter确定 | Esc取消", "Scroll · Enter done · Esc cancel"),
+                    fb, Brushes.LightGray, 8, Height - 24);
+            }
+        }
+        if (previewBmp != null)
+        {
+            int px = (Width - previewBmp.Width) / 2;
+            int py = 36;
+            g.DrawImage(previewBmp, px, py);
+            using (var p = new Pen(Color.FromArgb(100, 100, 100)))
+            {
+                g.DrawRectangle(p, px - 1, py - 1, previewBmp.Width + 1, previewBmp.Height + 1);
+            }
+        }
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        if (previewBmp != null) { previewBmp.Dispose(); previewBmp = null; }
+        base.OnFormClosed(e);
+    }
+}
 
 
 

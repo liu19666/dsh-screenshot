@@ -1,36 +1,40 @@
-# DSH 内置截图工具
+# DSH 内置截图工具 v2
 
-给 DeepSeek Harness 的截图工具：框选、标注、取色，确认即进剪贴板。
+给 DeepSeek Harness 的原生截图工具 v2：窗口/屏幕/任务栏自动识别高亮、手动框选、图形/画笔/文本标注、马赛克、长截图、取色，确认后图片填入 DSH 输入区（不自动发送）。
 
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2B-0078D6?logo=windows&logoColor=white)
 ![dsh](https://img.shields.io/badge/DeepSeek%20Harness-%E2%89%A50.2.0-4B6BFB)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![release](https://img.shields.io/github/v/release/Tansukii/dsh-screenshot?label=release&color=blue)
+![version](https://img.shields.io/badge/version-2.0.0-blue)
 
 [English](README.en.md) | 中文
 
 ![主界面](docs/screenshots/overview-zh.png)
+> *注：示意图为 v1 界面；v2 顶部新增「隐藏 DSH / 长截图」开关栏，底部统一编辑器新增马赛克与保存/取消/确定三键。*
 
-## 特性
+## 特性 (R1–R30)
 
-| | |
+| 特性 | 说明 |
 |---|---|
-| 约 0.2 秒弹出 | 常驻预热进程，不用等启动 |
-| 拖动框选 | 窗口自动识别，尺寸实时显示 |
-| 标注 | 画笔、直线、箭头、矩形、椭圆、文字，`Ctrl+Z` 撤销 |
-| 颜色 | 三档粗细、取色板、纯色填充 |
-| 放大器 | 显示指针处坐标与色值，按 `C` 复制色号 |
-| 贴边吸附 | 选区、控制点、文字都夹在屏幕内 |
-| 右键取消 | 不会露出桌面右键菜单 |
-| 跟随界面语言 | DSH 中文 → 中文，DSH 英文 → 英文 |
-| 占用低 | 空闲约 6 MB、0.5 % CPU，空闲自动退出 |
+| 入口剪刀按钮 | 话筒按钮左侧新增剪刀图标，同容器紧邻话筒之前，尺寸/圆角/hover 风格一致，不再渲染旧选项箭头菜单 (R1, R2) |
+| 自动识别目标 | 鼠标移动自动高亮窗口、桌面完整屏幕、任务栏；蓝色边框 + 白底尺寸标签（如 `888×777`）+ 区域外暗化 (R6, R8, R9) |
+| 单击与框选 | 单击直接确认识别区域进入编辑；按住拖动自由框选，松开即确认 (R10, R11) |
+| 隐藏 DSH 原生持久化 | 顶部开关栏左侧提供“隐藏 DSH 窗口”开关，原生侧持久化记忆；退出或完成时自动恢复窗口 (R3, R5, R13) |
+| 长截图与等比预览 | 顶部右侧开启“长截图”，选区内滚轮滚动捕获并平滑拼接，侧边显示等比缩小实时预览 (R13, R14, R15) |
+| 统一编辑器 | 普通与长截图进入同一编辑器：图形（矩形/椭圆/直线）、箭头、画笔、文本（支持粗细/颜色），中间马赛克 (R18, R20, R21) |
+| 保存 / 取消 / 确定 | 右侧三键：保存 PNG、红叉取消、绿勾确定 (R22, R24) |
+| 注入输入区且绝不自动发送 | 确定后图片经由合成粘贴事件注入 DSH 会话输入区，代码绝不触发发送操作 (R23) |
+| 快捷取消 | 选区外单击鼠标右键或按 Esc 即可退出截图模式 (R4, R17) |
+| 常驻暖进程 | `SnipTool.exe --serve --parent <pid>` 常驻预热，秒级进入原生覆盖层 (R27) |
+| 语言与主题跟随 | 自动跟随 DSH 中/英文语言偏好与明/暗主题 (R28) |
+| 纯本地与零遥测 | 原生 .NET Framework 4.8 / GDI+ 实现，纯本地运行，无网络请求、无遥测 (R26, R29) |
 
 ![工具栏](docs/screenshots/toolbar.png)
+> *注：示意图为 v1 工具栏；v2 统一编辑器中间新增马赛克，右侧固定为保存、取消、确定。*
 
 ## 安装
 
-需要 Windows 10/11 和 DeepSeek Harness。不需要管理员权限，也不需要额外运行库
-（`.NET Framework 4.0` 系统自带）。
+需要 Windows 10/11 和 DeepSeek Harness。不需要管理员权限，也不需要额外运行库。
 
 1. 把仓库放到插件目录，例如 `D:\dsh-home\plugins\dsh-screenshot`。
 
@@ -49,63 +53,27 @@
    }
    ```
 
-3. 重启 DSH，输入框右侧会出现这个按钮：
+3. 启动 DSH，语音输入话筒左侧即会出现剪刀截图按钮：
 
    ![截图按钮](docs/screenshots/button.png)
+   > *注：示意图为 v1 按钮样式；v2 剪刀按钮紧邻话筒左侧（同一容器），移除了旧的选项箭头菜单。*
 
-## 快捷键
+## 快捷键与操作
 
 | 操作 | 效果 |
 |---|---|
-| 点按钮或拖动 | 开始截图 |
-| 单击 | 选中指针下的窗口 |
-| 拖控制点 | 调整选区（放大器保持开启） |
-| `Ctrl+Z` | 撤销上一笔 |
-| `C` | 复制指针处色号（`#RRGGBB`） |
-| 回车 或 `✓` | 复制并退出 |
-| `Esc`、右键、`✕` | 取消 |
+| 点击话筒左侧剪刀按钮 | 进入截图原生覆盖层 |
+| 单击 | 确认自动识别的窗口/屏幕/任务栏区域 |
+| 拖拽鼠标 | 手动框选矩形区域 |
+| 拖动控制点 | 调整选区尺寸 |
+| 选区内滚轮滚动 | 长截图滚动捕获并平滑拼接 |
+| `Ctrl+Z` | 撤销上一笔标注 |
+| `C` 或 `Ctrl+C` | 复制指针处色号（`#RRGGBB`） |
+| 回车 或 `✓` | 确定并将截图注入 DSH 输入区（不自动发送） |
+| `Esc`、鼠标右键、`✕` | 取消截图并恢复 DSH 窗口 |
 
-## 隐私与常驻进程
+## 架构
 
-不联网、无遥测、不上传：图片只进剪贴板。你不点按钮它就不会截屏；空闲三分钟自动退出，
-DSH 退出后随之退出。排错时设置 `DSH_SNIP_DEBUG=1` 写 `%TEMP%\dsh-text.log`，默认不写任何文件。
-
-## 实现
-
-插件 host 保持一个常驻 `SnipTool.exe`，通过命名管道（`\\.\pipe\dsh-snip-show`）唤醒并等待显式
-ack：进程僵死能被立刻发现。主题与界面语言随请求下发。界面全部手绘：双缓冲位图负责压暗层与
-高亮选区，分层窗口负责工具栏，小窗口负责放大器。
-
-```
-bin/SnipTool.exe      预编译原生工具
-src/SnipTool.cs       全部 C# 源码（单文件）
-lib/index.js          插件 host：唤醒、主题、语言、路由
-lib/client.js         网页按钮与菜单
-cordis.patch.yml      插件注册
-```
-
-| 指标 | 实测 |
-|---|---|
-| 预热后弹出 | 170–200 ms |
-| 空闲预热后首次 | 330–390 ms |
-| 冷启动 | ≈ 1.1 s |
-| 空闲内存 | ≈ 6 MB |
-
-唤醒重试四次；若无响应，host 侧守护只杀存活超过 8 秒的进程再重启。定时器与鼠标钩子回调都
-检查对象是否已释放，关闭中的会话不会抛"无法访问已释放的对象"。
-
-## 已知限制
-
-仅在单屏 / 150% 缩放下验证；混合 DPI 与多屏未测试；仅支持 Windows；界面语言读取 DSH profile 里的
-`locale` 配置，DSH 调整该结构时需同步更新；标注只能逐笔撤销，不能单独删除。
-
-## 开发
-
-```powershell
-csc /nologo /target:winexe /optimize+ /out:bin\SnipTool.exe `
-    /r:System.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll src\SnipTool.cs
-```
-
-## 许可证
-
-MIT
+- **Host (lib/index.js)**: Cordis 插件服务，声明 `inject = ['webServer']`，管理暖进程（`SnipTool.exe --serve --parent <pid>`）与 `/shot/api/capture`、`/shot/api/last` 等路由，透传语言与主题（不传 hide 参数）。
+- **Client (lib/client.js)**: 前端注入剪刀按钮到话筒左侧，移除旧选项菜单；截图完成后通过合成 paste 事件注入 composer，绝不自动发送；中英双语可读错误处理。
+- **Native (bin/SnipTool.exe)**: C# 原生覆盖层，实现窗口/任务栏/屏幕探测、长截图、统一编辑工具栏与设置持久化。

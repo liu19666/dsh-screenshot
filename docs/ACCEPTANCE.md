@@ -1,6 +1,6 @@
 # DSH 截图插件 v2 — 安装与验收报告（ACCEPTANCE）
 
-> 状态：**已安装，等待重启 DSH 生效**（首装 2026-10-25 18:30，备份目录 .backup-install-20261025-183055；t25 于 18:40 重打包并幂等重装，bundles 保持 23 项不变）。t24 已修复 R21-1/R21-2/R21-3；门禁 out/captain-accept.ps1 12 步全绿之后才打包并装进 desktop profile。**本报告自 t25 起随包交付，且包内副本与仓库版逐字节一致**（t25 之前包内是 18:20 的 HOLD 骨架版，与仓库版 diff 106 行；见 §9）。§1/§2/§3 是实装的真实数字，证据件在 dist/（pack-final.json、install-verify.json、esm-check.json）。全程未重启、未停止任何 DSH 进程，未执行 git commit/push。
+> 状态：**已安装，等待生效**（首装 2026-10-25 18:30，备份目录 .backup-install-20261025-183055；t25 于 18:40 重打包并幂等重装，bundles 保持 23 项不变）。t25 收尾实测：运行中的 DSH 已加载 host 半边（/shot/api/version → 200），**先刷新页面**即可，必要时再重启 DSH（见 §6 开头）。t24 已修复 R21-1/R21-2/R21-3；门禁 out/captain-accept.ps1 12 步全绿之后才打包并装进 desktop profile。**本报告自 t25 起随包交付，且包内副本与仓库版逐字节一致**（t25 之前包内是 18:20 的 HOLD 骨架版，与仓库版 diff 106 行；见 §9）。§1/§2/§3 是实装的真实数字，证据件在 dist/（pack-final.json、install-verify.json、esm-check.json）。全程未重启、未停止任何 DSH 进程，未执行 git commit/push。
 
 ## 0. 范围与基线
 
@@ -115,9 +115,13 @@
 5. 暖进程常驻：--serve 进程空闲 180 秒退出；卸载/回滚后若仍有残留进程，需结束 SnipTool.exe（安装脚本不会 stop 任何 DSH 进程，也不会杀用户手工启动的实例）。
 6. 结果目录：默认 %TEMP%\dsh-screenshot-v2（非 ASCII 时退到 %PUBLIC%\dsh-screenshot-v2），只保留 last.png + state.json，长截图帧不落盘。
 
-## 6. 重启 DSH 后需人工确认清单
+## 6. 人工确认清单（先试刷新页面，必要时再重启 DSH）
 
-重启由用户决定；安装脚本只打印「需重启 DSH 生效」，不重启也不 stop 任何进程。重启后请按顺序确认：
+**先试刷新页面。** t25 收尾实测（2026-10-25 18:47，日志 out/evidence/t25-hotload-check.log）：运行中的 DSH（pid 18560，13:55:43 启动）**已经加载了插件的 host 半边** —— `http://127.0.0.1:64265/shot/api/version` → `200 {"version":"2.0.0"}`、`/shot/api/last` → `200 {"mtime":0}`、`/shot/api/state` → `200 {"at":0,"result":""}`（三个路由都由本插件的 lib/index.js 提供）。所以大概率**只需刷新一次页面**就能在话筒左侧拿到剪刀按钮，不必重启 DSH。
+
+只有在下列情况才需要重启：(a) 刷新后剪刀按钮仍未出现（客户端 bundle 未重新加载）；或 (b) 改动的是启动期才读取的东西 —— 原生 bin/SnipTool.exe、cordis.patch.yml（bundle patch 在启动时装配）。重启由用户决定；安装脚本只打印「需重启 DSH 生效」，不重启也不 stop 任何进程。
+
+无论刷新还是重启，都请按顺序确认：
 
 | # | 确认项 | 期望 |
 | --- | --- | --- |
@@ -183,3 +187,4 @@ pwsh -NoProfile -File install.ps1 -WhatIf
 | 2026-10-25（t25 轮次，时钟见 dist/install-verify.json 与 out/evidence/t25-*.log） | **t25：重打包消除「包内报告说没装」的缺陷**。此前包内 docs/ACCEPTANCE.md 是 18:20 的 HOLD 骨架版（14333 B，正文写「状态：安装待放行」），与仓库版（19838 B，正文写「已安装」）diff 106 行；现在用仓库当前版本重打包，解包后与仓库版 **diff 为空**。功能文件（bin/、lib/、package.json、cordis.patch.yml）与首装逐字节相同，只有 docs/ACCEPTANCE.md 随包更新 | dist/pack-final.json、dist/unpack/、out/evidence/t25-doc-diff.txt |
 | 同上（t25 轮次） | t25 幂等重装：install.ps1 -WhatIf 报 "already lists (23 entries) — no change" → 真跑 exit 0 → node_modules/dsh-screenshot 拿到新包，功能文件哈希与首装完全相同，bundles 仍 23 项无重复 | dist/install-verify.json、out/evidence/t25-whatif-*.log |
 | 自指说明（替代原「已知文档时序说明」） | 本报告随包交付，因此它与仓库版**逐字节一致**；把交付 tgz 自身的 sha256 写进报告会让报告字节变化（哈希自指，数学上不可能自洽），故 §1 只列「历史实测，非交付批次」的 sha256（本轮首轮 pack），交付批次的真实 sha256 记在包外 dist/pack-final.json 的 releasedSha256；§1 的体积给带宽 + 文件数 22（解包实测），精确字节数同样在 dist/pack-final.json。功能文件（bin/、lib/、package.json、cordis.patch.yml）在包内 = 仓库 = 已安装，三处哈希一致 | dist/pack-final.json、本节 |
+| 2026-10-25（t25 收尾，captain m01477 指示） | **新增「先刷新页面、必要时再重启」**：实测运行中的 DSH（pid 18560）已加载 host 半边 —— /shot/api/version → 200 `{"version":"2.0.0"}`、/shot/api/last → 200 `{"mtime":0}`、/shot/api/state → 200，故 §6 开头改写为「先刷新页面；刷新后仍无按钮、或改动了启动期读取的文件（bin/SnipTool.exe、cordis.patch.yml）再重启」。**按指示本条不重新打包**：交付 tgz 内仍为 060c4bbb…（24849 B），仓库文档此后多这一条，两者差异仅此一处；t25 的「解包 doc 与仓库 diff 为空」成立于打包/安装时点，之后的分叉是已知且有意的（包内副本哈希见 dist/pack-final.json 的 docInsidePackage） | out/evidence/t25-hotload-check.log；dist/pack-final.json |

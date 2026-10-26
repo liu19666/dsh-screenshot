@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.1.3
+
+- Changed: **no background process at all.** One helper process is started when you click the
+  scissors button and it is gone as soon as the session ends (confirm, cancel or right-click).
+  The warm/`--serve` model is gone from the host half: no pipe, no keep-alive, no 180s idle
+  window, nothing left running between captures. Cost: ~0.3-0.5s of startup per capture.
+  A second click while an overlay is open is absorbed by the native single-instance mutex.
+- Unchanged: the helper still runs from `%LOCALAPPDATA%\dsh-screenshot\<sha256-8>\SnipTool.exe`,
+  so `node_modules` is never locked by a running process (see 2.1.2); `bin/SnipTool.exe` bytes
+  are identical to 2.1.1/2.1.2.
+
 ## 2.1.2
 
 - Fixed: installing any other plugin from the market failed with `EPERM` and rolled the whole

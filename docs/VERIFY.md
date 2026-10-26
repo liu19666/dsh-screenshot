@@ -568,7 +568,7 @@ Get-ChildItem -Recurse -File -Filter 'R*.png' | Measure-Object   # Count = 0
 2. 打开任务管理器查看 `SnipTool.exe` 数量；记录首次与后续的响应时间。
 
 **预期**
-- 始终只有一个 `SnipTool.exe` 常驻（`--serve` 热进程，命令行形如 `SnipTool.exe --serve --parent <pid> --out <dir> --client`），后续截图由命名管道 `\\.\pipe\dsh-snip-show` 唤醒（消息形如 `show theme=dark lang=zh client=1 out=<dir>`）并复用同一进程（后续明显快于首次）；父进程退出或空闲 180 秒后热进程自行退出，进程被结束后下次点击会自动重建。
+- 空闲时进程数应为 **0**：v2.1.2 起加载插件不启动任何进程，也没有保活定时器；第一次点剪刀才启动助手（命令行形如 `%LOCALAPPDATA%\dsh-screenshot\<sha8>\SnipTool.exe --serve --parent <pid> --out <dir> --client`，**不是** `node_modules` 里那一份），之后由命名管道 `\\.\pipe\dsh-snip-show` 唤醒（消息形如 `show theme=dark lang=zh client=1 out=<dir>`）并复用同一进程（后续明显快于首次）；空闲 180 秒或父进程退出后自行退出，进程被结束后下次点击会自动重建。
 
 **证据**
 - 命令：`Get-Process SnipTool -ErrorAction SilentlyContinue | Select-Object Id,StartTime`。

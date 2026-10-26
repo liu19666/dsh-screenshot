@@ -1,7 +1,7 @@
 {
   "name": "dsh-screenshot",
-  "version": "2.1.1",
-  "description": "Built-in screenshot tool v2 for DeepSeek Harness on Windows: native overlay, auto-detection, long screenshot, editor, all local.",
+  "version": "2.1.2",
+  "description": "Built-in screenshot tool v2 for DeepSeek Harness on Windows: native overlay, window/screen/taskbar auto-detection, annotation, mosaic; the result lands in the composer.",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",

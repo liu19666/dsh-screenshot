@@ -1,5 +1,21 @@
 # Changelog
 
+## 2.1.2
+
+- Fixed: installing any other plugin from the market failed with `EPERM` and rolled the whole
+  transaction back (so nothing was installed). The helper ran out of
+  `node_modules/dsh-screenshot/bin/SnipTool.exe`, and Windows keeps a running image's own file
+  locked, so a package manager re-importing this package could not replace it. The helper is now
+  copied once per build to `%LOCALAPPDATA%\dsh-screenshot\<sha256-8>\SnipTool.exe` and runs from
+  there; `node_modules` only holds the source file and is never locked. Copies of older builds are
+  pruned on the next capture; if the copy cannot be made the packaged file is used as before.
+- Changed: no helper process is started when DSH loads and none is kept alive on a timer. The
+  first capture starts it, and it keeps itself ready for the next one and exits after 180s idle.
+  This removes the other half of the `EPERM` problem (a process that is always holding the file)
+  at the cost of ~0.3s on the first capture after idle. Consequence: nothing in this plugin is
+  running until you take a screenshot.
+- Fixed the package description, which still advertised the long-screenshot feature removed in 2.1.0.
+
 ## 2.1.1
 
 - Fixed: after confirming a capture ("done") DSH came back windowed instead of maximised.

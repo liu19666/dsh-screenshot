@@ -1,6 +1,6 @@
 {
   "name": "dsh-screenshot",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Built-in screenshot tool v2 for DeepSeek Harness on Windows: native overlay, auto-detection, long screenshot, editor, all local.",
   "license": "MIT",
   "type": "module",
@@ -23,6 +23,7 @@
     "src/",
     "cordis.patch.yml",
     "docs/",
+    "!docs/screenshots/",
     "README.md",
     "README.en.md"
   ],

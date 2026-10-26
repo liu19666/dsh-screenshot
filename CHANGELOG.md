@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.1.1
+
+- Fixed: after confirming a capture ("done") DSH came back windowed instead of maximised.
+  The helper restored the window twice on that path (once before the paste, once on close),
+  and `SW_RESTORE` un-maximises a window that is already restored. Right-click exit only
+  restored once, which is why cancel never showed the bug. The helper now remembers whether
+  DSH was maximised before it was minimised and restores exactly once (`RestoreDsh()`).
+  The same fix covers the left-click entry, which never hid the window but still resized it.
+
 ## 2.1.0
 
 - Removed the long-screenshot feature entirely (scrolling capture, the preview window, the top

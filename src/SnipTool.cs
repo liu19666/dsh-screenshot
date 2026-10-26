@@ -13,6 +13,7 @@ static class Program
 {
     [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr hWnd);
     [DllImport("psapi.dll")] public static extern bool EmptyWorkingSet(IntPtr hProcess);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int cmd);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string cls, string title);
@@ -444,6 +445,11 @@ public class SnipForm : Form
     bool closing;   // teardown started: late callbacks from other windows must do nothing
     bool confirmed; // the user pressed "done": the session must not report a cancel
     bool hideDsh;
+    // SW_RESTORE (9) on a window that is already restored puts it back to its *normal*
+    // size, so a maximised DSH came back windowed whenever the restore ran twice (paste,
+    // then close). Remember the pre-hide state and restore exactly once.
+    bool dshWasZoomed;
+    bool dshRestored;
     IntPtr dshWnd = IntPtr.Zero;
     Point lastMouse;
     Rectangle lastLoupe;
@@ -579,6 +585,18 @@ public class SnipForm : Form
         }
     }
 
+    // Puts DSH back the way it was before the overlay minimised it, exactly once.
+    // The "done" path restores twice (PasteIntoDsh, then OnFormClosed); cancel restores
+    // once, which is why right-click exit never showed the bug.
+    void RestoreDsh()
+    {
+        if (!hideDsh || dshRestored) return;
+        if (dshWnd == IntPtr.Zero) FindDsh();
+        if (dshWnd == IntPtr.Zero) return;
+        dshRestored = true;
+        Program.ShowWindow(dshWnd, dshWasZoomed ? 3 : 9);   // 3 = SW_SHOWMAXIMIZED, 9 = SW_RESTORE
+    }
+
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
@@ -592,6 +610,7 @@ public class SnipForm : Form
             FindDsh();
             if (dshWnd != IntPtr.Zero)
             {
+                dshWasZoomed = Program.IsZoomed(dshWnd);
                 Program.ShowWindow(dshWnd, 6);
                 // Wait for the minimise to land instead of a flat 420ms: the window is
                 // iconic almost at once, the animation only needs a short grace period.
@@ -1267,8 +1286,8 @@ public class SnipForm : Form
             }
             catch (Exception) { }
         }
-        if (hideDsh && dshWnd != IntPtr.Zero) Program.ShowWindow(dshWnd, 9);
-        else if (hideDsh && dshWnd == IntPtr.Zero)
+        RestoreDsh();
+        if (hideDsh && dshWnd == IntPtr.Zero)
         {
             // N-4: same diagnosability on the cancel/close restore path.
             Program.LogCrash("OnFormClosed: no DSH window handle, restore skipped (parentPid=" + Program.ParentPid + ")");
@@ -2386,7 +2405,7 @@ public class SnipForm : Form
                 Program.LogCrash("BringDshForward: no DSH window found (parentPid=" + Program.ParentPid + "), restore skipped");
                 return;
             }
-            Program.ShowWindow(dshWnd, 9);
+            RestoreDsh();
             SetForegroundWindow(dshWnd);
         }
         catch (Exception) { }
@@ -2401,7 +2420,7 @@ public class SnipForm : Form
             if (dshWnd == IntPtr.Zero) FindDsh();
             if (dshWnd == IntPtr.Zero) return;
             System.Threading.Thread.Sleep(220);
-            Program.ShowWindow(dshWnd, 9);
+            RestoreDsh();
             SetForegroundWindow(dshWnd);
             System.Threading.Thread.Sleep(140);
             keybd_event(0x11, 0, 0, IntPtr.Zero);      // Ctrl down

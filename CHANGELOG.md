@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.4
+
+- Changed: the helper now **outlives its session by 30 seconds** instead of leaving immediately.
+  It is still started on the first click (nothing runs at load), still exits on its own, and the
+  30s window is the only lifetime extension: a session ends (confirm / cancel / right-click) →
+  the host notices the native state file change and kills the helper 30s later. A second capture
+  inside that window reuses the running helper over the wake-up pipe, so it comes up instantly;
+  if the session never reports, a 15-minute hard cap still removes the process.
+- Unchanged: the helper still runs from `%LOCALAPPDATA%\dsh-screenshot\<sha256-8>\SnipTool.exe`
+  (never `node_modules`), `bin/SnipTool.exe` bytes are identical to 2.1.1-2.1.3, and no process
+  is spawned at page load or on an idle timer.
+
 ## 2.1.3
 
 - Changed: **no background process at all.** One helper process is started when you click the

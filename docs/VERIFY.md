@@ -568,7 +568,7 @@ Get-ChildItem -Recurse -File -Filter 'R*.png' | Measure-Object   # Count = 0
 2. 打开任务管理器查看 `SnipTool.exe` 数量；记录首次与后续的响应时间。
 
 **预期**
-- 空闲时进程数应为 **0**，且**没有** `--serve` 常驻进程、没有命名管道监听：v2.1.3 起每次点剪刀启动一个一次性进程（命令行形如 `%LOCALAPPDATA%\dsh-screenshot\<sha8>\SnipTool.exe --parent <pid> --out <dir> --client --hide --dark --lang zh`，**不是** `node_modules` 里那一份），截图一结束（确定/取消/右键退出）进程立即消失。连续点 3 次 = 每次 1 个进程、退出后归零；第二次点击若叠在已打开的覆盖层上，原生单实例互斥体会聚焦现有覆盖层、让第二个进程立刻退出。
+- 空闲时进程数应为 **0**：v2.1.4 起页面加载不预热、点剪刀才启动（命令行形如 `%LOCALAPPDATA%\dsh-screenshot\<sha8>\SnipTool.exe --serve --show --parent <pid> --out <dir> --client --hide --dark --lang zh`，**不是** `node_modules` 里那一份），**一次截图结束后进程只多活 30 秒**（宿主在原生写下 `dsh-snip-state.json` 后开始计时，到点即杀；会话若始终不上报，15 分钟硬上限兜底）——所以「截完马上数进程」应为 1，30 秒后再数应为 0。30 秒内再截一张：命中唤醒管道，覆盖层秒开，仍是同一个进程；第二次点击若叠在已打开的覆盖层上，原生单实例互斥体会聚焦现有覆盖层、让第二个进程立刻退出。
 
 **证据**
 - 命令：`Get-Process SnipTool -ErrorAction SilentlyContinue | Select-Object Id,StartTime`。

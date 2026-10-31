@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.1.5
+
+- Added: **copy button** in the editor toolbar, left of save. It puts the finished picture on the
+  clipboard and closes the overlay immediately; nothing is written to disk and nothing is injected
+  into the composer, so the image can be pasted anywhere (Ctrl+V). Clipboard access is retried
+  5 x 80ms because another process can hold it for a moment; if all five fail the overlay stays
+  open and says so instead of dropping the selection.
+- Added: **F9 / F10 shortcuts** - F9 opens the overlay without hiding DSH, F10 opens it with DSH
+  minimized. They work anywhere in the page (listener on `document`, capture phase), not only with
+  the composer focused.
+- Fixed: closing a session could make the overlay pop straight back up (most visible after **copy**:
+  the click looked like "re-enter the capture UI"). The host can queue more than one wake line for
+  a single click (retry after a slow ack, or a second process waking the running one), and the warm
+  helper ran one session per line. It now ignores wake lines while an overlay is on screen and
+  drains the queue when a session ends, so one click is always exactly one overlay.
+- Unchanged: the button still opens the same overlay (left-click = keep DSH, right-click = hide it),
+  and `/shot/api/last` is only fetched for `result: "ok"`, so a copied picture never reaches the
+  composer.
+
 ## 2.1.4
 
 - Changed: the helper now **outlives its session by 30 seconds** instead of leaving immediately.

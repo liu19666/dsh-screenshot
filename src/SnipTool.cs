@@ -149,7 +149,12 @@ static class Program
         // Warm mode: first call runs a session, then the process waits for the next one so
         // the plugin's button feels instant instead of paying the startup every time.
         StartPipeServer(parentPid);
-        if (showNow) RunSession(hide);
+        if (showNow)
+        {
+            SessionRunning = true;
+            try { RunSession(hide); }
+            finally { SessionRunning = false; DrainPending(); }
+        }
         else WarmUpStatics();
         TrimIdle();      // waiting around must not cost 30 MB of working set
         long idleDeadline = Environment.TickCount + 180000;
@@ -183,7 +188,9 @@ static class Program
                 string dir = request.Substring(outAt + 4).Trim().Trim('"');
                 if (dir.Length > 0) OutDir = dir;
             }
-            RunSession(sessionHide);
+            SessionRunning = true;
+            try { RunSession(sessionHide); }
+            finally { SessionRunning = false; DrainPending(); }
             Program.TLog("serve: session ended");
             TrimIdle();
         }
@@ -279,6 +286,18 @@ static class Program
     static volatile string PendingRequest;
     static readonly System.Threading.AutoResetEvent RequestEvent = new System.Threading.AutoResetEvent(false);
     static volatile bool ParentGone;
+    // True while an overlay is on screen. A wake line that arrives meanwhile is a repeat of
+    // the click that opened it (host retries after a slow ack, or a second process waking
+    // this one), not a request for a second session.
+    static volatile bool SessionRunning;
+
+    // Drops requests that piled up while a session was on screen. Without this the overlay
+    // popped straight back up after 复制 / 确定 / 取消 closed it: one session per queued line.
+    static void DrainPending()
+    {
+        RequestEvent.Reset();
+        PendingRequest = null;
+    }
 
     static void StartPipeServer(int parentPid)
     {
@@ -307,8 +326,14 @@ static class Program
                                 server.Flush();
                             }
                             catch (Exception) { }
-                            PendingRequest = line;
-                            RequestEvent.Set();
+                            // An overlay is already on screen: this line is a duplicate of the
+                            // click that opened it. Acknowledging without queueing keeps the
+                            // host from retrying while staying free of a second session.
+                            if (!SessionRunning)
+                            {
+                                PendingRequest = line;
+                                RequestEvent.Set();
+                            }
                         }
                     }
                 }
@@ -642,6 +667,7 @@ public class SnipForm : Form
         bar.Add("pen", Program.T("画笔", "Pen"), () => ToggleTool("pen"), Icons.Pen);
         bar.Add("text", Program.T("文本", "Text"), () => ToggleTool("text"), Icons.Text);
         bar.Add("mosaic", Program.T("马赛克", "Mosaic"), () => ToggleTool("mosaic"), Icons.Mosaic);
+        bar.Add("copy", Program.T("复制", "Copy"), () => CopyOnlyAndClose(), Icons.Copy);
         bar.Add("save", Program.T("保存", "Save"), SaveToFile, Icons.Save);
         bar.Add("close", Program.T("取消", "Cancel"), () => Close(), Icons.Close);
         bar.Add("done", Program.T("确定", "Done"), () => CopyAndClose(), Icons.Check);
@@ -2390,6 +2416,56 @@ public class SnipForm : Form
         }
     }
 
+    // Copy-only exit: the picture goes to the clipboard and the overlay closes without
+    // writing a PNG, so the web half has nothing to paste — the user pastes it himself
+    // wherever he wants. State "copy" also tells the web half to stay quiet.
+    void CopyOnlyAndClose()
+    {
+        if (closing || IsDisposed) return;
+        if (!hasSel || sel.Width < 2 || sel.Height < 2) return;
+        try
+        {
+            using (var bmp = RenderResult())
+            {
+                if (!CopyToClipboard(bmp))
+                {
+                    // Stay open: closing here would throw the selection away silently.
+                    MessageBox.Show(Program.T("复制到剪贴板失败，请重试。", "Could not copy the image. Try again."), Program.T("截图", "Screenshot"));
+                    return;
+                }
+            }
+            // Must be set before Close(): OnFormClosed writes "cancel" for unconfirmed
+            // sessions and would overwrite the "copy" marker we just wrote.
+            confirmed = true;
+            Program.WriteState("copy");
+            Close();
+            BringDshForward();
+        }
+        catch (Exception)
+        {
+            MessageBox.Show(Program.T("复制到剪贴板失败，请重试。", "Could not copy the image. Try again."), Program.T("截图", "Screenshot"));
+        }
+    }
+
+    // The clipboard is a shared resource: another process can hold it for a few dozen
+    // milliseconds, so a single SetImage call is not enough.
+    static bool CopyToClipboard(Bitmap bmp)
+    {
+        for (int i = 0; i < 5; i++)
+        {
+            try
+            {
+                Clipboard.SetImage(bmp);
+                return true;
+            }
+            catch (Exception)
+            {
+                System.Threading.Thread.Sleep(80);
+            }
+        }
+        return false;
+    }
+
     [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
 
     // --client variant of PasteIntoDsh: restore and focus DSH, but never type into it.
@@ -3810,6 +3886,25 @@ public static class Icons
             p.StartCap = p.EndCap = LineCap.Round;
             g.DrawLine(p, 7.6f, 7.6f, 14.4f, 7.6f);
             g.DrawLine(p, 11f, 7.6f, 11f, 15f);
+        }
+    });
+
+    // Two stacked sheets. The back one is drawn as an open path that stops where the
+    // front sheet starts, so no interior line shows through at 27px (a filled front sheet
+    // would leave a pale patch whenever the item is hovered).
+    public static readonly Action<Graphics, Rectangle, Color> Copy = Icon((g, c) =>
+    {
+        using (var p = Stroke(c))
+        {
+            p.Width = 1.7f;
+            var back = new[]
+            {
+                new PointF(8.6f, 7.2f), new PointF(8.6f, 4.0f), new PointF(17.6f, 4.0f),
+                new PointF(17.6f, 14.6f), new PointF(13.4f, 14.6f)
+            };
+            g.DrawLines(p, back);
+            using (var front = ToolBarStrip.Rounded(new RectangleF(4.4f, 7.2f, 9.2f, 11.0f), 2.2f))
+                g.DrawPath(p, front);
         }
     });
 

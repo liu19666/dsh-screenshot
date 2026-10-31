@@ -1,11 +1,11 @@
 # DSH 内置截图工具 v2
 
-给 DeepSeek Harness 的原生截图工具 v2：窗口/屏幕/任务栏自动识别高亮、手动框选、图形/画笔/文本标注、马赛克、取色，确认后图片填入 DSH 输入区（不自动发送）。入口左键＝保留 DSH 窗口、右键＝最小化 DSH 窗口。
+给 DeepSeek Harness 的原生截图工具 v2：窗口/屏幕/任务栏自动识别高亮、手动框选、图形/画笔/文本标注、马赛克、取色，确认后图片填入 DSH 输入区（不自动发送），也可以点「复制」只把图放进剪贴板。入口左键＝保留 DSH 窗口、右键＝最小化 DSH 窗口；快捷键 `F9`（不隐藏）/ `F10`（隐藏）随时唤出。
 
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2B-0078D6?logo=windows&logoColor=white)
 ![dsh](https://img.shields.io/badge/DeepSeek%20Harness-%E2%89%A50.2.0-4B6BFB)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![version](https://img.shields.io/badge/version-2.1.0-blue)
+![version](https://img.shields.io/badge/version-2.1.5-blue)
 
 [English](README.en.md) | 中文
 
@@ -69,6 +69,9 @@
 | `Ctrl+Z` | 撤销上一笔标注 |
 | `C` 或 `Ctrl+C` | 复制指针处色号（`#RRGGBB`） |
 | 回车 或 `✓` | 确定并将截图注入 DSH 输入区（不自动发送） |
+| 点击 `复制` 图标 | 图片进剪贴板并立即退出，**不插入输入区**，可粘贴到任意位置 |
+| `F9` | 与左键相同：进入截图覆盖层，DSH 保持原样 |
+| `F10` | 与右键相同：进入截图覆盖层并最小化 DSH |
 | `Esc`、鼠标右键、`✕` | 取消截图并恢复 DSH 窗口 |
 
 ## 架构

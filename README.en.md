@@ -1,11 +1,11 @@
 # DSH Screenshot Tool v2
 
-Native screenshot tool v2 for DeepSeek Harness on Windows: automatic window/screen/taskbar recognition & highlight, drag selection, shapes/pen/text annotations, mosaic, color picker, and injection into DSH composer without auto-sending. Left-click keeps the DSH window; right-click minimizes it first.
+Native screenshot tool v2 for DeepSeek Harness on Windows: automatic window/screen/taskbar recognition & highlight, drag selection, shapes/pen/text annotations, mosaic, color picker, and injection into DSH composer without auto-sending. Confirm and the image lands in the composer; press **Copy** instead to put it on the clipboard only. Left-click keeps the DSH window, right-click minimizes it, and `F9` / `F10` open the overlay from anywhere (F9 keeps DSH, F10 hides it).
 
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2B-0078D6?logo=windows&logoColor=white)
 ![dsh](https://img.shields.io/badge/DeepSeek%20Harness-%E2%89%A50.2.0-4B6BFB)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![version](https://img.shields.io/badge/version-2.1.0-blue)
+![version](https://img.shields.io/badge/version-2.1.5-blue)
 
 English | [中文](README.md)
 
@@ -69,6 +69,9 @@ Requires Windows 10/11 and DeepSeek Harness. No administrator privileges or exte
 | `Ctrl+Z` | Undo last annotation |
 | `C` or `Ctrl+C` | Copy color hex (`#RRGGBB`) under cursor |
 | Enter or `✓` | Confirm and inject image into DSH composer (no auto-send) |
+| `Copy` icon | Put the image on the clipboard and exit immediately — nothing is inserted into the composer |
+| `F9` | Same as left-click: open the overlay with DSH left untouched |
+| `F10` | Same as right-click: open the overlay with DSH minimized |
 | `Esc`, Right Click, `✕` | Cancel screenshot and restore DSH window |
 
 ## Architecture

@@ -1248,8 +1248,14 @@ public class SnipForm : Form
             }
             catch (Exception ex)
             {
+                // A failed save keeps the overlay so the user can pick another path.
                 MessageBox.Show(Program.T("保存失败：", "Save failed: ") + ex.Message, Program.T("截图", "Screenshot"));
+                return;
             }
+            // Saved to the user's own file: end the session the same way Esc does (state
+            // "cancel", DSH restored). Leaving the overlay up over a finished save is what
+            // made "save" feel like it did nothing.
+            Close();
         }
     }
     void PositionChrome()

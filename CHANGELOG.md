@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.6
+
+- Fixed: **save** left the capture UI on screen after the file had been written. Saving to your own
+  path now ends the session exactly like Esc does (overlay closes, DSH window restored, nothing
+  injected into the composer). A **failed** save keeps the overlay open so another path can be
+  picked, and a cancelled file dialog leaves the session untouched. Native side only; no host or
+  client change.
+
 ## 2.1.5
 
 - Added: **copy button** in the editor toolbar, left of save. It puts the finished picture on the

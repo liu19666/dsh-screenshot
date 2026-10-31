@@ -77,5 +77,6 @@
 ## 架构
 
 - **Host (lib/index.js)**: Cordis 插件服务，声明 `inject = ['webServer']`，管理暖进程（`SnipTool.exe --serve --parent <pid>`）与 `/shot/api/capture`、`/shot/api/last`、`/shot/api/probe` 等路由（`/shot/api/probe` 默认关闭；`touch %TEMP%\dsh-shot-debug.on` 后刷新页面，POST `/shot/api/probe` 才会把前端诊断 JSON 写到 `%TEMP%\dsh-shot-probe.json`），透传语言与主题，并按本次点击传 `hide=1|0`（左键 0、右键 1）。
-- **Client (lib/client.js)**: 前端注入剪刀按钮到话筒左侧，移除旧选项菜单；截图完成后通过合成 paste 事件注入 composer，绝不自动发送；中英双语可读错误处理。
+- **Client (lib/client.js)**: 前端把剪刀按钮注册到输入区右侧的多值槽 `conversation.input.right`（单值槽 `conversation.input.activity` 归话筒，不碰）；支持 `F9`（不隐藏）/ `F10`（隐藏）快捷键；截图完成后通过合成 paste 事件注入 composer，绝不自动发送；中英双语可读错误处理。
 - **Native (bin/SnipTool.exe)**: C# 原生覆盖层，实现窗口/任务栏/屏幕探测、统一编辑工具栏（v2.1 无长截图、无设置文件）。
+- **维护**: 见 [docs/MAINTENANCE.md](docs/MAINTENANCE.md)（交接手册：架构、运行时契约、发版 SOP、排障手册、红线）。
